@@ -1,0 +1,1 @@
+{"name":"stack-builder","role":"Turn a blueprint into folders, config files and agent specs","tools":["write","move"],"status":"planned"}

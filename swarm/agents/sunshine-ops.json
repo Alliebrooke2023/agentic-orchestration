@@ -1,0 +1,1 @@
+{"name":"sunshine-ops","role":"Check Sunshine (game-stream host) service status and config on the Compaq","tools":["service-status"],"status":"planned"}

@@ -59,3 +59,9 @@ test-output.txt
 
 # pnpm
 .pnpm-store/
+
+# swarm runtime state
+swarm/state/
+swarm/outbox/
+swarm/sorted/
+__pycache__/
