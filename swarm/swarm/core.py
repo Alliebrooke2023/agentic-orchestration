@@ -4,6 +4,9 @@ from pathlib import Path
 from .agents import Blueprinter, Handoff, Mover, Router
 from .llm import connect
 from .memory import Memory
+from .ollama_ops import OllamaOps
+from .stack_ops import StackOps
+from .sunshine_ops import SunshineOps
 from .tools import Jail
 
 
@@ -16,7 +19,10 @@ class Swarm:
         self.router = Router(self.llm, self.mem)
         self.team = {"mover": Mover(self.jail),
                      "blueprinter": Blueprinter(self.jail, self.llm, self.root / "agents"),
-                     "handoff": Handoff(self.jail, self.mem)}
+                     "handoff": Handoff(self.jail, self.mem),
+                     "ollama-ops": OllamaOps(),
+                     "sunshine-ops": SunshineOps(),
+                     "stack-ops": StackOps(self.jail, self.root / "agents")}
         self.last = None
 
     def do(self, task):

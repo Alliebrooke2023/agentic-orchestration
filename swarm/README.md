@@ -7,7 +7,9 @@ Stdlib-only Python. Talks to Ollama on :11434. Works with no model too (rule fal
 - mover — move/copy/list/sort files (jailed, never deletes/overwrites)
 - blueprinter — writes blueprints to `blueprints/`
 - handoff — writes session handoff to `outbox/`
-- planned (specs in `agents/`): ollama-ops, sunshine-ops, stack-builder
+- ollama-ops — `ollama status`, `pull <model>`, `ollama ram fit` (recommends a model that fits free RAM)
+- sunshine-ops — `sunshine status`: service, ports, config (read-only; prints restart command, never runs it)
+- stack-ops — `stack status`, `build stack <name>` scaffolds `stacks/<name>/` (no overwrite)
 
 ## Self-learning
 Every task is logged to `state/memory.jsonl`. Type `good` / `bad` after a result.
