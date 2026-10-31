@@ -2,6 +2,7 @@
 from pathlib import Path
 
 from .agents import Blueprinter, Handoff, Mover, Router
+from .health_report import HealthReport
 from .llm import connect
 from .memory import Memory
 from .ollama_ops import OllamaOps
@@ -23,6 +24,8 @@ class Swarm:
                      "ollama-ops": OllamaOps(),
                      "sunshine-ops": SunshineOps(),
                      "stack-ops": StackOps(self.jail, self.root / "agents")}
+        self.team["health-report"] = HealthReport(
+            self.jail, self.mem, self.team["ollama-ops"], self.team["sunshine-ops"])
         self.last = None
 
     def do(self, task):

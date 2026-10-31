@@ -5,6 +5,7 @@ import time
 from pathlib import Path
 
 ROUTES = {
+    "health-report": r"\b(health|morning|daily)\s+(report|check|status)\b|\bhealth\b",
     "ollama-ops": r"\b(ollama|pull|models?|ram)\b",
     "sunshine-ops": r"\b(sunshine|moonlight|stream(ing)?)\b",
     "stack-ops": r"\b(stack-ops|(build|scaffold)\s+(a\s+)?stack|stacks?\s+(list|status))\b",
@@ -39,7 +40,7 @@ class Router:
         shots = "\n".join(f'{r["task"]} -> {r["agent"]}'
                           for r in self.mem.similar(task, 3, ok=True))
         out = parse_json(self.llm.chat(      # 3. small model, few-shot from memory
-            'Pick one agent: mover, blueprinter, handoff, ollama-ops, sunshine-ops, stack-ops. Reply JSON {"agent":"..."}.\n'
+            'Pick one agent: mover, blueprinter, handoff, ollama-ops, sunshine-ops, stack-ops, health-report. Reply JSON {"agent":"..."}.\n'
             + shots, task, json_mode=True))
         return out["agent"] if out and out.get("agent") in ROUTES else "blueprinter"
 

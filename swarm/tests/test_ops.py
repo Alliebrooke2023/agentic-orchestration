@@ -108,3 +108,18 @@ class Stack(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Health(unittest.TestCase):
+    def test_report(self):
+        d = Path(tempfile.mkdtemp())
+        shutil.copytree(Path(__file__).resolve().parents[1] / "agents", d / "agents")
+        s = Swarm(d, llm=Offline())
+        s.team["ollama-ops"].host = "http://127.0.0.1:1"
+        agent, out = s.do("morning report")
+        self.assertEqual(agent, "health-report")
+        f = next((d / "outbox").glob("health_*.md"))
+        txt = f.read_text()
+        self.assertIn("Ollama: CHECK", txt)
+        self.assertIn("Disk free", txt)
+        self.assertEqual(s.router.pick("ollama status"), "ollama-ops")

@@ -21,9 +21,10 @@ def free_ram_gb():
         m.l = ctypes.sizeof(MS)
         ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(m))
         return m.avail / 1e9
-    for line in open("/proc/meminfo"):
-        if line.startswith("MemAvailable"):
-            return int(line.split()[1]) / 1e6
+    with open("/proc/meminfo") as f:
+        for line in f:
+            if line.startswith("MemAvailable"):
+                return int(line.split()[1]) / 1e6
     return 0.0
 
 
