@@ -33,7 +33,7 @@ class Memory:
             f.write(json.dumps(rec) + "\n")
         return rec
 
-    def similar(self, task, k=3, ok=None):
+    def similar(self, task, k=3, ok=None, min_sim=0.0):
         q = _words(task)
         scored = []
         for r in self.all():
@@ -42,7 +42,7 @@ class Memory:
             w = _words(r["task"])
             if q and w:
                 s = len(q & w) / len(q | w)
-                if s > 0:
+                if s > min_sim:
                     scored.append((s, r))
         scored.sort(key=lambda x: -x[0])
         return [r for _, r in scored[:k]]
@@ -50,7 +50,7 @@ class Memory:
     def vote(self, task):
         """Agent that most often succeeded on similar tasks (None if no data)."""
         tally = {}
-        for r in self.similar(task, k=5):
+        for r in self.similar(task, k=5, min_sim=0.5):
             tally[r["agent"]] = tally.get(r["agent"], 0) + (1 if r["ok"] else -1)
         best = max(tally.items(), key=lambda x: x[1], default=None)
         return best[0] if best and best[1] > 0 else None

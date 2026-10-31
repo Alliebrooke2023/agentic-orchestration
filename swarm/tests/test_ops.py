@@ -89,6 +89,11 @@ class Stack(unittest.TestCase):
                             ("blueprint a media stack", "blueprinter")]:
             self.assertEqual(self.s.router.pick(task), agent, task)
 
+    def test_learning_does_not_hijack_routing(self):
+        self.s.do("ollama status")
+        for task, agent in [("sunshine status", "sunshine-ops"), ("stack status", "stack-ops")]:
+            self.assertEqual(self.s.do(task)[0], agent)
+
     def test_build_no_overwrite(self):
         self.assertEqual(self.s.do("build stack media")[0], "stack-ops")
         self.assertTrue((self.d / "stacks/media/stack.json").exists())

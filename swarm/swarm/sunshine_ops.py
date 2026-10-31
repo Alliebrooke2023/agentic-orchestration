@@ -39,7 +39,8 @@ class SunshineOps:
             state = re.search(r"STATE\s*:\s*\d+\s+(\w+)", out)
             return state.group(1) if state else "NOT INSTALLED"
         out = self.run_cmd(["systemctl", "--user", "is-active", "sunshine"])
-        return out.splitlines()[-1] if out else "unknown"
+        last = out.splitlines()[-1] if out else ""
+        return last if last in ("active", "inactive", "failed", "activating") else "unknown"
 
     def config(self):
         for c in self.confs:
