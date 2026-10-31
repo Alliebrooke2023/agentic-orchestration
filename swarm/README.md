@@ -23,3 +23,7 @@ Router trusts routes that worked on similar tasks, avoids ones rated bad.
 
 ## Not integrated
 Lives in `swarm/`, separate from the Next.js app in the repo root. No shared code.
+
+## Quick start on cortex (Windows)
+1. Unzip to `C:\swarm`
+2. Double-click `setup.bat`, pick `1` (install), then `3` (health check), then `2` (run)

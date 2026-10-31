@@ -1,4 +1,4 @@
-# C:\swarm\install.ps1  -- run in PowerShell:  powershell -ExecutionPolicy Bypass -File .\install.ps1
+# C:\swarm\install.ps1  (setup.bat runs this for you)
 $ErrorActionPreference = "Stop"
 if (-not (Get-Command ollama -ErrorAction SilentlyContinue)) {
   winget install -e --id Ollama.Ollama --accept-source-agreements --accept-package-agreements
@@ -12,5 +12,5 @@ Start-Sleep 4
 ollama pull qwen2.5:1.5b-instruct-q4_K_M
 ollama pull llama3.2:1b
 Get-Service | Where-Object { $_.Name -match "sunshine" } | Format-Table Name, Status
-python -m unittest tests.test_swarm
+python -m unittest discover tests
 Write-Host "Done. Run:  python -m swarm"
