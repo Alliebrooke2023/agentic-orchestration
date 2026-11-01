@@ -106,9 +106,6 @@ class Stack(unittest.TestCase):
         self.assertIn("ollama-ops: built", out)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 class Health(unittest.TestCase):
     def test_report(self):
@@ -123,3 +120,24 @@ class Health(unittest.TestCase):
         self.assertIn("Ollama: CHECK", txt)
         self.assertIn("Disk free", txt)
         self.assertEqual(s.router.pick("ollama status"), "ollama-ops")
+
+    def test_flags_exact_state(self):
+        from swarm.health_report import HealthReport
+
+        class O:
+            status = staticmethod(lambda: "ollama 0.9 UP, 1 models")
+            fit = staticmethod(lambda: "ok")
+
+        d = Path(tempfile.mkdtemp())
+        s = Swarm(d, llm=Offline())
+        for state, want in [("inactive", "CHECK"), ("active", "OK"),
+                            ("failed", "CHECK")]:
+            sun = SunshineOps(lambda c, st=state: f"STATE : 1 {st}" if c[0] == "sc" else st,
+                              lambda p: False, ["/nope"])
+            txt = HealthReport(s.jail, s.mem, O(), sun).build()
+            self.assertIn(f"Sunshine: {want}", txt, state)
+            self.assertIn("Ollama: OK", txt)
+
+
+if __name__ == "__main__":
+    unittest.main()
