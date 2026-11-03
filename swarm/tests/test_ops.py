@@ -167,35 +167,5 @@ class Mail(unittest.TestCase):
         self.assertIn('"ok": false', res)
 
 
-class Notify(unittest.TestCase):
-    def test_sync_and_ping(self):
-        from swarm import notify
-        d = Path(tempfile.mkdtemp())
-        shutil.copytree(Path(__file__).resolve().parents[1] / "agents", d / "agents")
-        sync = Path(tempfile.mkdtemp()) / "phone"
-        notify.save(d, sync_dir=str(sync), ntfy_topic=notify.new_topic())
-        sent = []
-        s = Swarm(d, llm=Offline())
-        s.notifier.post = lambda url, data, title: sent.append((url, data))
-        s.team["ollama-ops"].host = "http://127.0.0.1:1"
-        _, out = s.do("health report")
-        self.assertIn("synced ->", out)
-        self.assertIn("phone ping sent", out)
-        self.assertTrue(sent[0][0].startswith("https://ntfy.sh/swarm-"))
-        self.assertEqual(len(list(sync.glob("health_*.md"))), 1)
-        s.do("health report")                       # second run must not overwrite
-        self.assertEqual(len(list(sync.glob("health_*.md"))), 2)
-
-    def test_failures_dont_break(self):
-        from swarm import notify
-        d = Path(tempfile.mkdtemp())
-        notify.save(d, ntfy_topic="short")
-        n = notify.Notifier(d)
-        self.assertIn("skipped", n.deliver("x", "y")[0])
-        notify.save(d, ntfy_topic=notify.new_topic())
-        n.post = lambda *a: (_ for _ in ()).throw(OSError("offline"))
-        self.assertIn("ntfy failed", n.deliver("x", "y")[0])
-
-
 if __name__ == "__main__":
     unittest.main()

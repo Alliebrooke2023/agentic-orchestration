@@ -14,11 +14,6 @@ Stdlib-only Python. Talks to Ollama on :11434. Works with no model too (rule fal
 - health-report — `health report`: morning page into `outbox/`
 - mailbox — `send <agent>: <job>` queues work, `process mail` runs it, `mailbox` shows pending. Done mail moves to `mailbox/<agent>/done/`
 
-## Reports to your phone
-    python -m swarm --ntfy auto            (prints a private topic; subscribe in the ntfy app)
-    python -m swarm --sync "C:\Users\you\OneDrive\swarm"
-Or setup.bat option 8. Saved in `swarm.json`. Handoff/health reports are then copied to the folder and pinged.
-
 ## Self-learning
 Every task is logged to `state/memory.jsonl`. Type `good` / `bad` after a result.
 Router trusts routes that worked on similar tasks, avoids ones rated bad.
