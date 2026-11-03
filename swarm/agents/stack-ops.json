@@ -1,0 +1,1 @@
+{"name":"stack-ops","role":"List agent status and scaffold stacks/<name>/ from the built roster (no overwrite)","model":"none (rules)","tools":["write","copy"],"status":"built"}

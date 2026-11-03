@@ -1,0 +1,1 @@
+{"name":"mover","role":"Move/copy/list/sort files inside the jail; never delete or overwrite","model":"none (rules)","tools":["ls","move","copy","write"],"status":"built"}

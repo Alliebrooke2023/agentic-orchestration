@@ -1,0 +1,1 @@
+{"name":"sunshine-ops","role":"Read-only Sunshine health: service state, ports, config; prints restart command","model":"none (rules)","tools":["service-status","port-probe"],"status":"built"}

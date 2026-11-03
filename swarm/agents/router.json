@@ -1,0 +1,1 @@
+{"name":"router","role":"Pick the right agent for a task","model":"qwen2.5:1.5b-instruct-q4_K_M","tools":[],"learns":true,"status":"built"}

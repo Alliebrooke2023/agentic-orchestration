@@ -1,0 +1,1 @@
+{"name":"health-report","role":"Morning one-page status of Ollama, Sunshine, RAM, disk and recent swarm activity into outbox/","model":"none (rules)","tools":["write"],"status":"built"}

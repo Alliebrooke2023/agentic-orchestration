@@ -1,0 +1,1 @@
+{"name":"handoff","role":"Package recent activity + file list into outbox/ for the next session or machine","model":"none (rules)","tools":["write"],"status":"built"}

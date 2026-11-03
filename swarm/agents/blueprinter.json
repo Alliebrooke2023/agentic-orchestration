@@ -1,0 +1,1 @@
+{"name":"blueprinter","role":"Outline blueprints for new agents/stacks into blueprints/","model":"qwen2.5:1.5b-instruct-q4_K_M","tools":["write"],"status":"built"}

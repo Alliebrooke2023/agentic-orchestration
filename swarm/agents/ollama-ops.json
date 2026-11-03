@@ -1,0 +1,1 @@
+{"name":"ollama-ops","role":"Check Ollama is up, list/pull quantized models, report RAM fit","model":"none (rules)","tools":["http:11434"],"status":"built"}
