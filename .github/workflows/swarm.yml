@@ -1,0 +1,30 @@
+name: Swarm
+
+on:
+  push:
+    branches: [main]
+    paths: ["swarm/**", "swarm-cortex.zip", "swarm-cortex-setup.ps1", ".github/workflows/swarm.yml"]
+  pull_request:
+    paths: ["swarm/**", "swarm-cortex.zip", "swarm-cortex-setup.ps1", ".github/workflows/swarm.yml"]
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: swarm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Unit tests
+        run: python -m unittest discover tests -v
+      - name: Bundle in sync
+        if: matrix.os == 'ubuntu-latest'
+        working-directory: .
+        run: python .github/scripts/check_swarm_bundle.py
