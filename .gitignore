@@ -67,3 +67,4 @@ swarm/sorted/
 swarm/stacks/
 __pycache__/
 swarm/mailbox/
+swarm/swarm.json
