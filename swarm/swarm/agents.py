@@ -33,12 +33,12 @@ class Router:
     def pick(self, task):
         if re.match(r"\s*send\s+[\w-]+\s*:", task, re.I):   # explicit mail always wins
             return "mailbox"
-        learned = self.mem.vote(task)          # 1. what worked before
-        if learned:
-            return learned
         scores = {a: len(re.findall(p, task, re.I)) for a, p in ROUTES.items()}
-        best = max(scores, key=scores.get)     # 2. keywords
-        if scores[best]:
+        best = max(scores, key=scores.get)
+        learned = self.mem.vote(task)          # 1. what worked before ...
+        if learned and (not scores[best] or scores.get(learned, 0)):
+            return learned                     # ... unless keywords clearly name another agent
+        if scores[best]:                       # 2. keywords
             return best
         shots = "\n".join(f'{r["task"]} -> {r["agent"]}'
                           for r in self.mem.similar(task, 3, ok=True))

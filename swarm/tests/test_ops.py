@@ -89,6 +89,12 @@ class Stack(unittest.TestCase):
                             ("blueprint a media stack", "blueprinter")]:
             self.assertEqual(self.s.router.pick(task), agent, task)
 
+    def test_stale_memory_does_not_override_keywords(self):
+        # old installs learned "health report" -> mover before health-report existed
+        for _ in range(3):
+            self.s.mem.add("health report", "mover", "README.md", True)
+        self.assertEqual(self.s.router.pick("health report"), "health-report")
+
     def test_learning_does_not_hijack_routing(self):
         self.s.do("ollama status")
         for task, agent in [("sunshine status", "sunshine-ops"), ("stack status", "stack-ops")]:
