@@ -5,11 +5,11 @@ import time
 from pathlib import Path
 
 ROUTES = {
+    "mailbox": r"^\s*send\s+[\w-]+\s*:|\b(process|check)\s+mail\b|\bmailbox\b",
     "health-report": r"\b(health|morning|daily)\s+(report|check|status)\b|\bhealth\b",
     "ollama-ops": r"\b(ollama|pull|models?|ram)\b",
     "sunshine-ops": r"\b(sunshine|moonlight|stream(ing)?)\b",
     "stack-ops": r"\b(stack-ops|(build|scaffold)\s+(a\s+)?stack|stacks?\s+(list|status))\b",
-    "mailbox": r"^\s*send\s+[\w-]+\s*:|\b(process|check)\s+mail\b|\bmailbox\b",
     "mover": r"\b(move|copy|list|ls|organi[sz]e|sort|files?|folder)\b",
     "blueprinter": r"\b(blueprint|outline|design|plan|spec|architecture|stack)\b",
     "handoff": r"\b(handoff|hand off|package|transfer|sync|send)\b",
@@ -31,6 +31,8 @@ class Router:
         self.llm, self.mem = llm, memory
 
     def pick(self, task):
+        if re.match(r"\s*send\s+[\w-]+\s*:", task, re.I):   # explicit mail always wins
+            return "mailbox"
         learned = self.mem.vote(task)          # 1. what worked before
         if learned:
             return learned

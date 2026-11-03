@@ -64,4 +64,5 @@ test-output.txt
 swarm/state/
 swarm/outbox/
 swarm/sorted/
+swarm/stacks/
 __pycache__/
