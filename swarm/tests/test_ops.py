@@ -123,3 +123,59 @@ class Health(unittest.TestCase):
         self.assertIn("Ollama: CHECK", txt)
         self.assertIn("Disk free", txt)
         self.assertEqual(s.router.pick("ollama status"), "ollama-ops")
+
+
+class Mail(unittest.TestCase):
+    def setUp(self):
+        self.d = Path(tempfile.mkdtemp())
+        shutil.copytree(Path(__file__).resolve().parents[1] / "agents", self.d / "agents")
+        self.s = Swarm(self.d, llm=Offline())
+
+    def test_send_process(self):
+        (self.d / "inbox").mkdir()
+        (self.d / "inbox" / "a.pdf").write_text("x")
+        self.assertEqual(self.s.do("send mover: sort inbox")[0], "mailbox")
+        self.assertEqual(len(list((self.d / "mailbox" / "mover").glob("*.json"))), 1)
+        self.assertIn("mover=1", self.s.do("mailbox")[1])
+        self.assertIn("processed 1", self.s.do("process mail")[1])
+        self.assertTrue((self.d / "sorted" / "pdf" / "a.pdf").exists())
+        self.assertEqual(list((self.d / "mailbox" / "mover").glob("*.json")), [])
+        self.assertTrue(list((self.d / "mailbox" / "mover" / "done").glob("*.result.json")))
+        self.assertEqual(self.s.do("process mail")[1], "no mail")
+
+    def test_bad_agent_and_failure(self):
+        self.assertIn("unknown agent", self.s.do("send nobody: hi")[1])
+        self.s.do("send mover: move ../../etc/passwd to box")
+        self.assertIn("processed 1", self.s.do("process mail")[1])
+        res = next((self.d / "mailbox" / "mover" / "done").glob("*.result.json")).read_text()
+        self.assertIn('"ok": false', res)
+
+
+class Notify(unittest.TestCase):
+    def test_sync_and_ping(self):
+        from swarm import notify
+        d = Path(tempfile.mkdtemp())
+        shutil.copytree(Path(__file__).resolve().parents[1] / "agents", d / "agents")
+        sync = Path(tempfile.mkdtemp()) / "phone"
+        notify.save(d, sync_dir=str(sync), ntfy_topic=notify.new_topic())
+        sent = []
+        s = Swarm(d, llm=Offline())
+        s.notifier.post = lambda url, data, title: sent.append((url, data))
+        s.team["ollama-ops"].host = "http://127.0.0.1:1"
+        _, out = s.do("health report")
+        self.assertIn("synced ->", out)
+        self.assertIn("phone ping sent", out)
+        self.assertTrue(sent[0][0].startswith("https://ntfy.sh/swarm-"))
+        self.assertEqual(len(list(sync.glob("health_*.md"))), 1)
+        s.do("health report")                       # second run must not overwrite
+        self.assertEqual(len(list(sync.glob("health_*.md"))), 2)
+
+    def test_failures_dont_break(self):
+        from swarm import notify
+        d = Path(tempfile.mkdtemp())
+        notify.save(d, ntfy_topic="short")
+        n = notify.Notifier(d)
+        self.assertIn("skipped", n.deliver("x", "y")[0])
+        notify.save(d, ntfy_topic=notify.new_topic())
+        n.post = lambda *a: (_ for _ in ()).throw(OSError("offline"))
+        self.assertIn("ntfy failed", n.deliver("x", "y")[0])

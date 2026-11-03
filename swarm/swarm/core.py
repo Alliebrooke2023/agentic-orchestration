@@ -4,7 +4,9 @@ from pathlib import Path
 from .agents import Blueprinter, Handoff, Mover, Router
 from .health_report import HealthReport
 from .llm import connect
+from .mailbox import Mailbox
 from .memory import Memory
+from .notify import Notifier
 from .ollama_ops import OllamaOps
 from .stack_ops import StackOps
 from .sunshine_ops import SunshineOps
@@ -26,12 +28,19 @@ class Swarm:
                      "stack-ops": StackOps(self.jail, self.root / "agents")}
         self.team["health-report"] = HealthReport(
             self.jail, self.mem, self.team["ollama-ops"], self.team["sunshine-ops"])
+        self.team["mailbox"] = Mailbox(self.jail, lambda: list(self.team),
+                                       lambda a, t: self.team[a].run(t), self.mem)
+        self.notifier = Notifier(self.root)
         self.last = None
 
     def do(self, task):
         agent = self.router.pick(task)
         try:
             result, ok = self.team[agent].run(task), True
+            if agent in ("handoff", "health-report") and result.startswith("wrote "):
+                path = result.split("\n")[0][6:].strip()
+                notes = self.notifier.deliver(path, result.split("\n", 1)[-1])
+                result += "".join("\n" + n for n in notes)
         except Exception as e:          # failures are lessons too
             result, ok = f"error: {e}", False
         self.last = self.mem.add(task, agent, result, ok)

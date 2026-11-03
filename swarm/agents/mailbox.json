@@ -1,0 +1,1 @@
+{"name":"mailbox","role":"Per-agent mailboxes: 'send <agent>: <job>' queues work, 'process mail' runs it, results go to done/ and replies to the sender","model":"none (rules)","tools":["write","move"],"status":"built"}
