@@ -2,3 +2,6 @@
 .cursor/
 
 pnpm-lock.yaml
+
+# Python swarm (own tooling; reformatting would desync the installer bundle)
+swarm/
