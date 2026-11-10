@@ -9,7 +9,7 @@ import argparse, json, os, socket, threading, time, secrets
 from datetime import datetime
 import cv2
 import numpy as np
-from flask import Flask, Response, jsonify, request, abort
+from flask import Flask, Response, jsonify, request, abort, redirect
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REC_DIR = os.path.join(HERE, "recordings")
@@ -182,17 +182,35 @@ def scan_bluetooth(timeout=4):
 # ---------- web ----------
 app = Flask(__name__)
 TOKEN = ""
+COOKIE = "camwall_auth"
+ALLOWED_SCHEMES = ("rtsp://", "rtsps://", "http://", "https://", "demo:")
+
+
+def valid_src(src):
+    """Camera sources only: device index or network/demo URL. Blocks local file paths."""
+    src = str(src).strip()
+    return src.isdigit() or src.lower().startswith(ALLOWED_SCHEMES)
+
+
+def token_ok(value):
+    return bool(value) and secrets.compare_digest(str(value), TOKEN)
 
 
 @app.before_request
 def auth():
-    if TOKEN and request.path.startswith("/api") and request.headers.get("X-Token", request.args.get("t")) != TOKEN:
+    """Every route needs the token. The token is never put in the page: a valid
+    ?t= link sets an HttpOnly, SameSite=Strict cookie and redirects without it."""
+    if token_ok(request.args.get("t")) and request.method == "GET" and request.path == "/":
+        resp = redirect("/")
+        resp.set_cookie(COOKIE, TOKEN, httponly=True, samesite="Strict")
+        return resp
+    if not (token_ok(request.cookies.get(COOKIE)) or token_ok(request.headers.get("X-Token"))):
         abort(401)
 
 
 @app.route("/")
 def index():
-    return open(os.path.join(HERE, "ui.html"), encoding="utf-8").read().replace("__T__", TOKEN)
+    return open(os.path.join(HERE, "ui.html"), encoding="utf-8").read()
 
 
 @app.route("/api/cams")
@@ -202,7 +220,9 @@ def api_cams():
 
 @app.route("/api/add", methods=["POST"])
 def api_add():
-    d = request.json
+    d = request.json or {}
+    if not valid_src(d.get("src", "")):
+        abort(400, "source must be a camera index or rtsp/http(s) URL")
     return jsonify(id=add_cam(d["name"], d["src"], d.get("kind", "url")))
 
 
@@ -246,19 +266,25 @@ def main():
     ap.add_argument("--demo", type=int, default=0, help="add N synthetic cams")
     ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--host", default="0.0.0.0")
-    ap.add_argument("--token", default="", help="require token for remote API")
+    ap.add_argument("--token", default="", help="access token (random one is generated if omitted)")
+    ap.add_argument("--no-browser", action="store_true")
     ap.add_argument("--auto", action="store_true", help="auto-add discovered local+ONVIF cams")
     a = ap.parse_args()
-    TOKEN = a.token
+    TOKEN = a.token or secrets.token_urlsafe(16)
     if os.path.exists(CFG) and not a.demo:
         for s in json.load(open(CFG)):
-            add_cam(s["name"], s["src"], s["kind"])
+            if valid_src(s["src"]):
+                add_cam(s["name"], s["src"], s["kind"])
     if a.auto:
         for d in scan_local() + scan_onvif():
             add_cam(d["name"], d["src"], d["kind"])
     for i in range(a.demo):
         add_cam(f"Demo {i + 1}", f"demo:{i + 1}", "demo")
-    print(f"CamWall: http://localhost:{a.port}   (remote: http://<this-pc-ip>:{a.port})")
+    url = f"http://localhost:{a.port}/?t={TOKEN}"
+    print(f"CamWall open: {url}\nPhone/remote: http://<this-pc-ip>:{a.port}/?t={TOKEN}  (keep this link private)")
+    if not a.no_browser:
+        import webbrowser
+        threading.Timer(1.5, lambda: webbrowser.open(url)).start()
     app.run(host=a.host, port=a.port, threaded=True)
 
 

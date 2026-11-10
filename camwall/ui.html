@@ -22,8 +22,8 @@ button.rec{background:#a22}
 </div>
 <div id="disc"></div><div id="grid"></div>
 <script>
-const T="__T__",q=p=>p+(T?(p.includes("?")?"&":"?")+"t="+T:"");
-const H={"X-Token":T,"Content-Type":"application/json"};
+const q=p=>p;
+const H={"Content-Type":"application/json"};
 const $=i=>document.getElementById(i);
 const post=(u,b)=>fetch(u,{method:"POST",headers:H,body:b&&JSON.stringify(b)}).then(r=>r.json());
 let built="";
