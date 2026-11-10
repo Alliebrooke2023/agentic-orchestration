@@ -5,6 +5,3 @@ pnpm-lock.yaml
 
 # Python swarm (own tooling; reformatting would desync the installer bundle)
 swarm/
-
-# Python camera wall (own tooling)
-camwall/
