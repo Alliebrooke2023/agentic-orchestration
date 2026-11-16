@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#0b0720" />
+    <title>DriftRack - the night market for pre-loved style</title>
+    <link rel="icon" href="/logo.svg" />
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <canvas id="sky" aria-hidden="true"></canvas>
+    <div class="aurora" aria-hidden="true"><i></i><i></i><i></i></div>
+
+    <header class="top">
+      <a class="brand" href="#/"><img src="/logo.svg" alt="" /><span>Drift<b>Rack</b></span></a>
+      <form id="searchForm" class="search" role="search">
+        <input id="searchBox" type="search" placeholder="Search jeans, Nike, vintage..." aria-label="Search" />
+      </form>
+      <nav id="nav" class="nav"></nav>
+    </header>
+
+    <div class="ticker" aria-label="Sale ads">
+      <div id="tickerTrack" class="ticker-track"></div>
+    </div>
+
+    <main id="view" class="view"></main>
+
+    <footer class="foot">
+      <span>DriftRack - sandbox build. Payments are simulated.</span>
+      <a href="#/">Browse</a><a href="#/sell">Sell</a><a href="#/dashboard">Dashboard</a>
+    </footer>
+
+    <nav id="tabbar" class="tabbar" aria-label="Main"></nav>
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <script src="/app.js"></script>
+  </body>
+</html>

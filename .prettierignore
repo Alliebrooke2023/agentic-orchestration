@@ -8,3 +8,6 @@ swarm/
 
 # Python camera wall (own tooling)
 camwall/
+
+# DriftRack marketplace (own tooling, stdlib Python + vanilla JS)
+driftrack/
