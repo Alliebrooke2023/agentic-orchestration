@@ -59,6 +59,7 @@ function renderNav() {
     ? `<a class="${on("")}" href="#/">Browse</a><a class="${on("favorites")}" href="#/favorites">Saved</a>
        <a class="${on("inbox")}" href="#/inbox">Inbox</a><a class="${on("orders")}" href="#/orders">Orders</a>
        <a class="${on("dashboard")}" href="#/dashboard">Dashboard</a>
+       ${u.is_owner ? `<a class="${on("admin")}" href="#/admin">Admin</a>` : ""}
        <a class="btn primary" href="#/sell">+ Sell</a>
        <a href="#/u/${esc(u.username)}">@${esc(u.username)}</a><a href="#" id="logout">Log out</a>`
     : `<a class="${on("")}" href="#/">Browse</a><a href="#/login">Log in</a><a class="btn primary" href="#/login">Start selling</a>`;
@@ -210,6 +211,8 @@ async function pageItem(id) {
   const r = l.seller_rating;
   let actions = "";
   if (l.status === "sold") actions = `<div class="badge sold">Sold</div>`;
+  else if (l.status === "reserved") actions = `<div><span class="badge reserved">Reserved</span> <span class="muted">Someone is checking out right now.</span></div>`;
+  else if (l.status === "removed") actions = `<div><span class="badge removed">Removed</span> <span class="muted">Taken down by the marketplace owner.</span></div>`;
   else if (mine)
     actions = `<a class="btn" href="#/sell/${l.id}">Edit listing</a>
       <button class="btn" id="hideBtn">${l.status === "hidden" ? "Put back on the rack" : "Hide listing"}</button>
@@ -222,7 +225,8 @@ async function pageItem(id) {
         <button class="btn">Make offer</button></form>
       ${l.my_offer ? `<div class="muted">Your last offer: ${money(l.my_offer.amount)} <span class="badge ${esc(l.my_offer.status)}">${esc(l.my_offer.status)}</span></div>` : ""}
       <form id="msgForm" class="row"><input style="flex:1;min-width:0;padding:11px 14px;border-radius:12px;border:1px solid var(--line);background:rgba(255,255,255,.07)"
-        name="body" maxlength="1000" placeholder="Ask the seller a question" aria-label="Message" required /><button class="btn">Send</button></form>`;
+        name="body" maxlength="1000" placeholder="Ask the seller a question" aria-label="Message" required /><button class="btn">Send</button></form>
+      <button type="button" class="linkish" id="reportBtn">Report this listing</button>`;
   view.innerHTML = `
     <div class="item">
       <img class="pic" src="${pic(l.image)}" alt="${esc(l.title)}" />
@@ -245,10 +249,24 @@ async function pageItem(id) {
   const on = (sel, ev, fn) => { const el = $(sel); if (el) el[ev] = guard(fn); };
   on("#buyBtn", "onclick", async () => {
     if (needLogin()) return;
-    if (!confirm(`Buy "${l.title}" for ${money(price + fee)}? (simulated payment)`)) return;
-    await api(`/listings/${l.id}/buy`, "POST");
+    const stripe = state.meta.payments === "stripe";
+    const note = stripe ? "You'll pay on Stripe's secure page." : "(sandbox: payment is simulated)";
+    if (!confirm(`Buy "${l.title}" for ${money(price + fee)}?\n${note}`)) return;
+    const out = await api(`/listings/${l.id}/buy`, "POST");
+    if (out.checkout_url) {
+      toast("Taking you to secure checkout...");
+      location.href = out.checkout_url;
+      return;
+    }
     toast("It's yours! Order placed.");
     location.hash = "#/orders";
+  });
+  on("#reportBtn", "onclick", async () => {
+    if (needLogin()) return;
+    const reason = prompt("What's wrong with this listing? (fake, prohibited item, offensive, scam...)");
+    if (!reason) return;
+    await api(`/listings/${l.id}/report`, "POST", { reason });
+    toast("Thanks - the owner will review it");
   });
   on("#offerForm", "onsubmit", async (e) => {
     e.preventDefault();
@@ -394,7 +412,7 @@ async function pageDashboard() {
           <h1>Hey @${esc(u.username)}, you've made <span data-to="${s.revenue}" data-money="1">$0</span></h1>
           <div style="margin-top:8px"><span class="stars">${d.rating.count ? stars(d.rating.avg) : "☆☆☆☆☆"}</span>
             ${d.rating.count ? `${d.rating.avg} from ${d.rating.count} reviews` : "No reviews yet"}</div></div>
-        <a class="btn primary" href="#/sell">+ List an item</a>
+        <div class="row">${u.is_owner ? `<a class="btn" href="#/admin">Admin</a>` : ""}<a class="btn primary" href="#/sell">+ List an item</a></div>
       </div>
     </section>
     <div class="stats">
@@ -523,15 +541,30 @@ async function pageProfile(name) {
       ${mine ? `<form id="bioForm" class="row" style="margin-top:14px"><input name="city" maxlength="40" placeholder="City" value="${esc(p.city)}" aria-label="City"
         style="width:130px;padding:11px 14px;border-radius:12px;border:1px solid var(--line);background:rgba(255,255,255,.07)" />
         <input name="bio" maxlength="300" placeholder="Short bio" value="${esc(p.bio)}" aria-label="Bio"
-        style="flex:1;min-width:0;padding:11px 14px;border-radius:12px;border:1px solid var(--line);background:rgba(255,255,255,.07)" /><button class="btn">Save</button></form>` : ""}</div>
+        style="flex:1;min-width:0;padding:11px 14px;border-radius:12px;border:1px solid var(--line);background:rgba(255,255,255,.07)" />
+        <input class="inp" name="email" type="email" maxlength="254" placeholder="Email (for password reset)" value="${esc(state.user.email)}" aria-label="Email" style="flex:1 1 220px" />
+        <button class="btn">Save</button></form>
+      <form id="pwForm" class="row" style="margin-top:10px">
+        <input class="inp" name="old" type="password" autocomplete="current-password" required placeholder="Current password" aria-label="Current password" style="flex:1 1 160px" />
+        <input class="inp" name="new" type="password" autocomplete="new-password" required minlength="6" placeholder="New password" aria-label="New password" style="flex:1 1 160px" />
+        <button class="btn">Change password</button></form>` : ""}</div>
     <h2 class="section-title">On the rack</h2>${grid(p.listings, "Nothing listed right now", "Check back soon.")}
     ${p.reviews.length ? `<h2 class="section-title">Reviews</h2><div class="panel stack">${p.reviews.map((r) => `<div><span class="stars">${stars(r.rating)}</span> <b>@${esc(r.buyer)}</b> <span class="muted">· ${ago(r.created)}</span><div>${esc(r.text)}</div></div>`).join("")}</div>` : ""}`;
   const form = $("#bioForm");
   if (form) form.onsubmit = guard(async (e) => {
     e.preventDefault();
-    await api("/profile", "POST", Object.fromEntries(new FormData(form)));
+    const data = Object.fromEntries(new FormData(form));
+    await api("/profile", "POST", data);
+    state.user.email = data.email;
     toast("Profile saved");
     pageProfile(name);
+  });
+  const pw = $("#pwForm");
+  if (pw) pw.onsubmit = guard(async (e) => {
+    e.preventDefault();
+    await api("/password/change", "POST", Object.fromEntries(new FormData(pw)));
+    pw.reset();
+    toast("Password changed. Other devices were signed out.");
   });
 }
 
@@ -541,16 +574,157 @@ function pageLogin() {
     <p class="muted">Log in, or pick a username and password to create your account.</p>
     <div class="field"><label for="username">Username</label><input id="username" name="username" autocomplete="username" required minlength="3" maxlength="24" /></div>
     <div class="field"><label for="password">Password</label><input id="password" name="password" type="password" autocomplete="current-password" required minlength="6" /></div>
+    <div class="field"><label for="email">Email <span style="font-weight:400">(new accounts, optional - used for password reset)</span></label><input id="email" name="email" type="email" autocomplete="email" maxlength="254" /></div>
     <div class="row"><button class="btn primary" style="flex:1" value="login">Log in</button><button class="btn" style="flex:1" value="register">Create account</button></div>
-    <p class="muted" style="margin-bottom:0;font-size:13.500px">Demo seller: <b>demo</b> / <b>demo123</b></p></form>`;
+    <p class="muted" style="margin-bottom:0;font-size:13.500px"><a href="#/forgot"><u>Forgot password?</u></a> · Demo seller: <b>demo</b> / <b>demo123</b></p></form>`;
   $("#authForm").onsubmit = guard(async (e) => {
     e.preventDefault();
     const data = Object.fromEntries(new FormData(e.target));
-    const out = await api("/" + (e.submitter?.value || "login"), "POST", data);
+    const mode = e.submitter?.value || "login";
+    if (mode === "login") delete data.email;
+    const out = await api("/" + mode, "POST", data);
     state.user = out.user;
     toast("Welcome, @" + out.user.username);
     location.hash = "#/dashboard";
   });
+}
+
+// ---------------------------------------------------------------- account recovery
+function pageForgot() {
+  view.innerHTML = `<form id="forgotForm" class="panel narrow">
+    <h1 style="font-size:28px">Forgot your password?</h1>
+    <p class="muted">Enter your username. If your account has an email, we'll send a reset link.
+      No email on file? Ask the marketplace owner for a reset link.</p>
+    <div class="field"><label for="fuser">Username</label><input id="fuser" name="username" required maxlength="24" autocomplete="username" /></div>
+    <button class="btn primary block">Send reset link</button></form>`;
+  $("#forgotForm").onsubmit = guard(async (e) => {
+    e.preventDefault();
+    const out = await api("/password/forgot", "POST", Object.fromEntries(new FormData(e.target)));
+    view.innerHTML = `<div class="panel narrow empty"><b>${out.email ? "Check your inbox" : "Ask the owner"}</b>
+      ${out.email ? "If that account has an email, a reset link is on its way. It works for 1 hour." : "Email isn't switched on for this marketplace yet. The owner can make you a reset link from the Admin page."}
+      <br><br><a class="btn" href="#/login">Back to log in</a></div>`;
+  });
+}
+
+function pageReset(token) {
+  view.innerHTML = `<form id="resetForm" class="panel narrow">
+    <h1 style="font-size:28px">Choose a new password</h1>
+    <div class="field"><label for="np">New password</label><input id="np" name="password" type="password" required minlength="6" autocomplete="new-password" /></div>
+    <button class="btn primary block">Save new password</button></form>`;
+  $("#resetForm").onsubmit = guard(async (e) => {
+    e.preventDefault();
+    await api("/password/reset", "POST", { token, password: e.target.password.value });
+    toast("Password saved - log in with it now");
+    location.hash = "#/login";
+  });
+}
+
+async function pagePayReturn(orderId, action) {
+  if (needLogin()) return;
+  view.innerHTML = `<div class="panel narrow empty"><b>${action === "cancel" ? "Cancelling checkout..." : "Confirming your payment..."}</b>Hang tight.</div>`;
+  const out = await api(`/orders/${orderId}/${action === "cancel" ? "cancel" : "confirm"}`, "POST");
+  if (out.status === "paid") {
+    toast("Payment received - it's yours!");
+    location.hash = "#/orders";
+  } else if (out.status === "expired") {
+    toast("Checkout cancelled - the item is back on the rack");
+    location.hash = "#/item/" + out.listing_id;
+  } else {
+    view.innerHTML = `<div class="panel narrow empty"><b>Payment not confirmed yet</b>Stripe hasn't marked this order paid.
+      <br><br><button class="btn primary" id="retryPay">Check again</button> <a class="btn" href="#/cancel/${Number(orderId)}">Cancel checkout</a></div>`;
+    $("#retryPay").onclick = () => pagePayReturn(orderId, "paid").catch(fail);
+  }
+}
+
+// ---------------------------------------------------------------- admin
+async function pageAdmin() {
+  if (needLogin()) return;
+  if (!state.user.is_owner) throw new Error("Only the marketplace owner can open Admin.");
+  const d = await api("/admin");
+  const s = d.stats;
+  const tile = (label, val, isMoney, cls = "") => `<div class="stat ${cls}"><small>${label}</small><b data-to="${val}" data-money="${isMoney ? 1 : 0}">0</b></div>`;
+  view.innerHTML = `
+    <section class="dash-hero"><div class="row spread"><div>
+      <div class="muted" style="color:#f1e6ff">Marketplace owner</div><h1>Admin control room</h1>
+      <div style="margin-top:8px">Payments: <b>${d.payments === "stripe" ? "Stripe" : "simulated (sandbox)"}</b> · Email: <b>${d.email ? "on" : "off"}</b></div></div></div></section>
+    <div class="stats">
+      ${tile("Sales volume", s.gmv, true, "mint")}${tile("Fees earned", s.fees, true)}
+      ${tile("Orders", s.orders)}${tile("Live listings", s.active, false, "violet")}
+      ${tile("Members", s.users, false, "violet")}${tile("Suspended", s.banned)}
+      ${tile("Open reports", s.open_reports)}
+    </div>
+    <h2 class="section-title">Reports</h2>
+    <div class="panel table-wrap">${d.reports.length ? `<table>
+      <tr><th></th><th>Listing</th><th>Reason</th><th>From</th><th></th></tr>
+      ${d.reports.map((r) => `<tr><td><img class="thumb" src="${pic(r.image)}" alt="" /></td>
+        <td><a href="#/item/${r.listing_id}">${esc(r.title)}</a><div class="muted" style="font-size:13px">by @${esc(r.seller)} · <span class="badge ${esc(r.listing_status)}">${esc(r.listing_status)}</span></div></td>
+        <td style="overflow-wrap:anywhere">${esc(r.reason)}</td><td>@${esc(r.reporter)}<div class="muted" style="font-size:13px">${ago(r.created)}</div></td>
+        <td class="num"><button class="btn small danger" data-report="${r.id}" data-act="remove">Remove listing</button>
+          <button class="btn small" data-report="${r.id}" data-act="dismiss">Dismiss</button></td></tr>`).join("")}</table>`
+      : `<div class="empty"><b>No open reports</b>When members flag a listing, it lands here.</div>`}</div>
+    <h2 class="section-title">Members</h2>
+    <div class="panel table-wrap"><table>
+      <tr><th>Member</th><th>Email</th><th class="num">Live</th><th class="num">Reports</th><th>Status</th><th></th></tr>
+      ${d.users.map((u) => `<tr><td><a href="#/u/${esc(u.username)}">@${esc(u.username)}</a>${u.is_owner ? ' <span class="badge">owner</span>' : ""}${u.is_demo ? ' <span class="badge">demo</span>' : ""}
+          <div class="muted" style="font-size:13px">joined ${ago(u.created)}</div></td>
+        <td style="overflow-wrap:anywhere">${esc(u.email) || '<span class="muted">-</span>'}</td>
+        <td class="num">${u.active}</td><td class="num">${u.reports}</td>
+        <td><span class="badge ${u.banned ? "declined" : "active"}">${u.banned ? "suspended" : "active"}</span></td>
+        <td class="num">${u.is_owner ? "" : `<button class="btn small" data-user="${u.id}" data-act="reset_link">Reset link</button>
+          <button class="btn small ${u.banned ? "mint" : "danger"}" data-user="${u.id}" data-act="${u.banned ? "unban" : "ban"}">${u.banned ? "Restore" : "Suspend"}</button>`}</td></tr>`).join("")}
+    </table></div>
+    <div id="linkBox"></div>`;
+  view.querySelectorAll("[data-to]").forEach(countUp);
+  view.querySelectorAll("[data-report]").forEach((b) => (b.onclick = guard(async () => {
+    if (b.dataset.act === "remove" && !confirm("Take this listing down?")) return;
+    await api("/admin/reports/" + b.dataset.report, "POST", { action: b.dataset.act });
+    toast(b.dataset.act === "remove" ? "Listing removed" : "Report dismissed");
+    pageAdmin();
+  })));
+  view.querySelectorAll("[data-user]").forEach((b) => (b.onclick = guard(async () => {
+    const act = b.dataset.act;
+    if (act === "ban" && !confirm("Suspend this member? They are signed out and their listings are hidden.")) return;
+    const out = await api("/admin/users/" + b.dataset.user, "POST", { action: act });
+    if (act === "reset_link") {
+      $("#linkBox").innerHTML = `<div class="panel" style="margin-top:16px"><b>One-time reset link</b> <span class="muted">(works for 1 hour - send it to the member privately)</span>
+        <div class="row" style="margin-top:8px"><input class="inp" id="linkOut" readonly value="${esc(out.link)}" style="flex:1;min-width:0" /><button class="btn" id="copyLink">Copy</button></div></div>`;
+      $("#copyLink").onclick = () => { $("#linkOut").select(); navigator.clipboard?.writeText(out.link).then(() => toast("Copied"), () => {}); };
+      $("#linkBox").scrollIntoView({ behavior: "smooth" });
+      return;
+    }
+    toast(act === "ban" ? "Member suspended" : "Member restored");
+    pageAdmin();
+  })));
+}
+
+// ---------------------------------------------------------------- legal
+const LEGAL = {
+  terms: ["Terms of Use", [
+    ["Who we are", "DriftRack is a marketplace where members buy and sell pre-loved items directly with each other. DriftRack is not the seller of items listed by members."],
+    ["Your account", "You must give accurate information, keep your password private, and be old enough to form a binding contract where you live. You are responsible for activity on your account."],
+    ["Listing items", "Only list items you own and are allowed to sell. No counterfeits, stolen goods, weapons, drugs, recalled products or anything illegal. Describe condition honestly and use your own photos."],
+    ["Buying", "The price shown at checkout includes a buyer protection fee. Payment is released to the seller after you confirm the item arrived as described."],
+    ["Fees", "Buyers pay a buyer protection fee shown before payment. Fees may change; changes apply to new orders only."],
+    ["Moderation", "We may remove listings, suspend accounts, or cancel orders that break these terms or put members at risk."],
+    ["Disputes", "Contact the seller first through messages. If you can't resolve it, contact the marketplace owner before confirming delivery."],
+    ["Liability", "The service is provided as is. To the extent the law allows, DriftRack is not liable for indirect losses or for the conduct of members."],
+    ["Changes", "We may update these terms. Continuing to use DriftRack after a change means you accept the new terms."],
+  ]],
+  privacy: ["Privacy Policy", [
+    ["What we collect", "Your username, password (stored only as a salted hash), optional email, city and bio, your listings and photos, messages, offers, orders and reviews, and basic technical data such as your IP address for security."],
+    ["Why", "To run your account and the marketplace, process orders, prevent fraud and abuse, and contact you about your account."],
+    ["Payments", "Card payments are handled by our payment provider (Stripe). We never see or store your full card number."],
+    ["Sharing", "Other members see your public profile, listings and reviews. We share data with service providers (hosting, payments, email) only to run the service, and with authorities when the law requires it."],
+    ["Cookies", "We use one essential cookie to keep you signed in. No advertising or tracking cookies."],
+    ["Your choices", "You can edit your profile, delete active listings, and ask the marketplace owner to delete your account and data."],
+    ["Security", "Passwords are hashed, sessions use secure cookies, and access to admin tools is restricted to the owner."],
+  ]],
+};
+function pageLegal(kind) {
+  const [title, parts] = LEGAL[kind];
+  view.innerHTML = `<article class="panel narrow" style="max-width:760px"><h1 style="font-size:30px">${title}</h1>
+    <p class="muted">Template text. Have it reviewed for your country before a public launch.</p>
+    ${parts.map(([h, t]) => `<h2 style="font-size:18px;margin:18px 0 6px">${h}</h2><p style="margin:0">${t}</p>`).join("")}</article>`;
 }
 
 // ---------------------------------------------------------------- router
@@ -563,6 +737,9 @@ function route_() {
   const pages = {
     "": pageHome, item: () => pageItem(a), sell: () => pageSell(a), dashboard: pageDashboard, orders: pageOrders,
     inbox: () => pageInbox(a, b), favorites: pageFavorites, u: () => pageProfile(a), login: pageLogin,
+    forgot: pageForgot, reset: () => pageReset(a), paid: () => pagePayReturn(a, "paid"),
+    cancel: () => pagePayReturn(a, "cancel"), admin: pageAdmin,
+    terms: () => pageLegal("terms"), privacy: () => pageLegal("privacy"),
   };
   Promise.resolve((pages[page] || pageHome)()).catch(fail);
   if (page !== "") scrollTo(0, 0);
@@ -583,6 +760,7 @@ addEventListener("hashchange", route_);
     const [me, meta] = await Promise.all([api("/me"), api("/meta")]);
     state.user = me.user;
     state.meta = meta;
+    $("#footNote").textContent = meta.payments === "stripe" ? "DriftRack · secure checkout by Stripe" : "DriftRack - sandbox build. Payments are simulated.";
     loadTicker().catch(() => {});
     route_();
   } catch (err) {

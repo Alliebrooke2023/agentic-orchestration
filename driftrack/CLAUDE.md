@@ -19,5 +19,9 @@ or add dependencies on, anything else in this repository.
 - Colours come from the CSS variables at the top of `static/style.css`.
 - Every animation must respect `prefers-reduced-motion`.
 - `data/` holds the live database and photos. Never delete it without asking the owner.
-- Sandbox status: payments are simulated, server binds to 127.0.0.1. Keep it that way
-  until the owner says to launch publicly.
+- Defaults stay sandbox-safe: payments simulated unless `STRIPE_SECRET_KEY` is set,
+  server binds to 127.0.0.1 unless `DRIFTRACK_HOST` is set. Never change the defaults
+  and never deploy publicly until the owner says to launch.
+- Seller orders/revenue queries must filter with `VALID_ORDER` (excludes unpaid checkouts).
+- Owner-only routes call `owner_only(ctx)`. Login-style routes call `rate_hit(...)`.
+- Modules: `app.py` (server + routes), `payments.py` (Stripe), `mailer.py` (SMTP), `seed.py`.

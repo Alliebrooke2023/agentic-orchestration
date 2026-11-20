@@ -21,6 +21,9 @@ from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
+import mailer
+import payments
+
 ROOT = os.path.dirname(os.path.abspath(__file__))
 STATIC = os.path.join(ROOT, "static")
 DATA = os.environ.get("DRIFTRACK_DATA", os.path.join(ROOT, "data"))
@@ -28,6 +31,15 @@ UPLOADS = os.path.join(DATA, "uploads")
 DB_PATH = os.path.join(DATA, "driftrack.db")
 HOST = os.environ.get("DRIFTRACK_HOST", "127.0.0.1")
 PORT = int(os.environ.get("DRIFTRACK_PORT", "8750"))
+PUBLIC_URL = os.environ.get("DRIFTRACK_PUBLIC_URL", "").rstrip("/")
+SECURE_COOKIES = os.environ.get("DRIFTRACK_SECURE_COOKIES") == "1"
+TRUST_PROXY = os.environ.get("DRIFTRACK_TRUST_PROXY") == "1"
+VALID_ORDER = "status IN ('paid','shipped','complete')"
+PAY_WINDOW = 35 * 60  # seconds a listing stays reserved while the buyer is on Stripe
+LIMITS = {"login": (5, 900), "register": (10, 3600), "forgot": (5, 3600), "report": (20, 3600)}
+CSP = ("default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; "
+       "script-src 'self'; connect-src 'self'; form-action 'self'; frame-ancestors 'none'; "
+       "base-uri 'none'")
 
 CATEGORIES = ["Women", "Men", "Kids", "Shoes", "Bags", "Accessories", "Home", "Vintage"]
 CONDITIONS = ["New with tags", "Like new", "Good", "Fair"]
@@ -43,6 +55,28 @@ DEFAULT_ADS = [
 
 _local = threading.local()
 _write_lock = threading.Lock()
+_rate_lock = threading.Lock()
+RATE = {}
+
+
+def rate_hit(kind, key, record=True):
+    """Sliding-window limiter. Raises 429 once the limit for (kind, key) is reached."""
+    limit, window = LIMITS[kind]
+    now = time.time()
+    with _rate_lock:
+        hits = [t for t in RATE.get((kind, key), []) if t > now - window]
+        if len(hits) >= limit:
+            RATE[(kind, key)] = hits
+            wait = int(hits[0] + window - now) // 60 + 1
+            raise ApiError(429, f"Too many attempts. Try again in {wait} min.")
+        if record:
+            hits.append(now)
+        RATE[(kind, key)] = hits
+
+
+def rate_clear(kind, key):
+    with _rate_lock:
+        RATE.pop((kind, key), None)
 
 
 def db():
@@ -86,12 +120,24 @@ CREATE TABLE IF NOT EXISTS messages(
   id INTEGER PRIMARY KEY, listing_id INTEGER, from_id INTEGER, to_id INTEGER,
   body TEXT, created REAL);
 CREATE TABLE IF NOT EXISTS ads(id INTEGER PRIMARY KEY, text TEXT NOT NULL, created REAL);
+CREATE TABLE IF NOT EXISTS reports(
+  id INTEGER PRIMARY KEY, listing_id INTEGER, reporter_id INTEGER, reason TEXT,
+  status TEXT DEFAULT 'open', created REAL);
+CREATE TABLE IF NOT EXISTS resets(
+  token_hash TEXT PRIMARY KEY, user_id INTEGER, created REAL, used INTEGER DEFAULT 0);
 """
+MIGRATIONS = [("users", "email", "TEXT DEFAULT ''"), ("users", "banned", "INTEGER DEFAULT 0"),
+              ("orders", "stripe_session", "TEXT DEFAULT ''")]
 
 
 def init_db():
     conn = db()
     conn.executescript(SCHEMA)
+    for table, col, decl in MIGRATIONS:  # upgrade databases made by older builds
+        cols = [r[1] for r in conn.execute(f"PRAGMA table_info({table})")]
+        if col not in cols:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
+    conn.execute("DELETE FROM sessions WHERE created<?", (time.time() - 30 * 86400,))
     if conn.execute("SELECT COUNT(*) FROM ads").fetchone()[0] == 0:
         conn.executemany("INSERT INTO ads(text,created) VALUES(?,?)",
                          [(t, time.time()) for t in DEFAULT_ADS])
@@ -225,16 +271,32 @@ def ai_describe(d):
 
 
 # ---------------------------------------------------------------- handlers
+EMAIL_RE = re.compile(r"^[^@\s]{1,64}@[^@\s]{1,190}\.[A-Za-z]{2,}$")
+
+
+def clean_email(value):
+    email = clean(value, 254).lower()
+    need(not email or EMAIL_RE.match(email), "That email address doesn't look right")
+    return email
+
+
+def check_password(password):
+    need(6 <= len(password) <= 200, "Password needs 6 to 200 characters")
+    return password
+
+
 def h_register(ctx):
+    rate_hit("register", ctx.ip)
     username = clean(ctx.body.get("username"), 24)
-    password = str(ctx.body.get("password") or "")
+    password = check_password(str(ctx.body.get("password") or ""))
+    email = clean_email(ctx.body.get("email"))
     need(re.fullmatch(r"[A-Za-z0-9_]{3,24}", username), "Username: 3-24 letters, numbers or _")
-    need(len(password) >= 6, "Password needs at least 6 characters")
     with _write_lock:
         need(not db().execute("SELECT 1 FROM users WHERE username=?", (username,)).fetchone(),
              "That username is taken", 409)
         owner = 0 if db().execute("SELECT 1 FROM users WHERE is_owner=1").fetchone() else 1
         uid = create_user(username, password, is_owner=owner)
+        db().execute("UPDATE users SET email=? WHERE id=?", (email, uid))
         db().commit()
     ctx.login(uid)
     return h_me(ctx)
@@ -242,10 +304,16 @@ def h_register(ctx):
 
 def h_login(ctx):
     username = clean(ctx.body.get("username"), 24)
+    key = ctx.ip + "|" + username.lower()
+    rate_hit("login", key, record=False)
     row = db().execute("SELECT * FROM users WHERE username=?", (username,)).fetchone()
-    ok = row and hmac.compare_digest(row["pw"], hash_pw(str(ctx.body.get("password") or ""),
+    ok = row and hmac.compare_digest(row["pw"], hash_pw(str(ctx.body.get("password") or "")[:200],
                                                         row["salt"]))
-    need(ok, "Wrong username or password", 401)
+    if not ok:
+        rate_hit("login", key)
+        raise ApiError(401, "Wrong username or password")
+    need(not row["banned"], "This account is suspended. Contact the marketplace owner.", 403)
+    rate_clear("login", key)
     ctx.login(row["id"])
     return h_me(ctx)
 
@@ -263,18 +331,83 @@ def h_me(ctx):
         return {"user": None}
     u = ctx.user
     return {"user": {"id": u["id"], "username": u["username"], "balance": round(u["balance"], 2),
-                     "is_owner": bool(u["is_owner"]), "bio": u["bio"], "city": u["city"]}}
+                     "is_owner": bool(u["is_owner"]), "bio": u["bio"], "city": u["city"],
+                     "email": u["email"]}}
 
 
 def h_meta(ctx):
     return {"categories": CATEGORIES, "conditions": CONDITIONS,
             "fee": {"pct": FEE_PCT, "flat": FEE_FLAT},
-            "ai": bool(os.environ.get("OPENROUTER_API_KEY"))}
+            "ai": bool(os.environ.get("OPENROUTER_API_KEY")),
+            "payments": "stripe" if payments.enabled() else "simulated",
+            "email": mailer.enabled()}
+
+
+def h_health(ctx):
+    db().execute("SELECT 1").fetchone()
+    return {"ok": True, "time": int(time.time())}
+
+
+def base_url(ctx):
+    return PUBLIC_URL or "http://" + ctx.host
+
+
+def reset_link(ctx, uid):
+    token = secrets.token_urlsafe(32)
+    db().execute("INSERT INTO resets(token_hash,user_id,created) VALUES(?,?,?)",
+                 (hashlib.sha256(token.encode()).hexdigest(), uid, time.time()))
+    db().commit()
+    return f"{base_url(ctx)}/#/reset/{token}"
+
+
+def h_forgot(ctx):
+    rate_hit("forgot", ctx.ip)
+    row = db().execute("SELECT id, email, banned FROM users WHERE username=?",
+                       (clean(ctx.body.get("username"), 24),)).fetchone()
+    # Emails only go to PUBLIC_URL links so a forged Host header can't redirect them.
+    if row and row["email"] and not row["banned"] and mailer.enabled() and PUBLIC_URL:
+        mailer.send(row["email"], "Reset your DriftRack password",
+                    "Someone asked to reset your DriftRack password.\n\n"
+                    f"Open this link within 1 hour:\n{reset_link(ctx, row['id'])}\n\n"
+                    "If it wasn't you, ignore this email.")
+    return {"ok": True, "email": mailer.enabled() and bool(PUBLIC_URL)}
+
+
+def h_reset(ctx):
+    token = str(ctx.body.get("token") or "")
+    password = check_password(str(ctx.body.get("password") or ""))
+    with _write_lock:
+        row = db().execute("SELECT * FROM resets WHERE token_hash=?",
+                           (hashlib.sha256(token.encode()).hexdigest(),)).fetchone()
+        need(row and not row["used"] and row["created"] > time.time() - 3600,
+             "This reset link is invalid or has expired")
+        salt = secrets.token_hex(16)
+        db().execute("UPDATE users SET pw=?, salt=? WHERE id=?",
+                     (hash_pw(password, salt), salt, row["user_id"]))
+        db().execute("UPDATE resets SET used=1 WHERE user_id=?", (row["user_id"],))
+        db().execute("DELETE FROM sessions WHERE user_id=?", (row["user_id"],))
+        db().commit()
+    return {"ok": True}
+
+
+def h_change_password(ctx):
+    ctx.auth()
+    old = str(ctx.body.get("old") or "")[:200]
+    need(hmac.compare_digest(ctx.user["pw"], hash_pw(old, ctx.user["salt"])),
+         "Current password is wrong", 403)
+    password = check_password(str(ctx.body.get("new") or ""))
+    salt = secrets.token_hex(16)
+    db().execute("UPDATE users SET pw=?, salt=? WHERE id=?", (hash_pw(password, salt), salt, ctx.uid))
+    db().execute("DELETE FROM sessions WHERE user_id=? AND token!=?", (ctx.uid, ctx.token))
+    db().commit()
+    return {"ok": True}
 
 
 def h_listings(ctx):
     q = ctx.query
-    where, args = ["l.status=?"], [q.get("status", "active")]
+    release_expired()
+    status = q.get("status", "active")
+    where, args = ["l.status=?"], [status if status in ("active", "sold") else "active"]
     if q.get("q"):
         where.append("(l.title LIKE ? OR l.brand LIKE ? OR l.description LIKE ?)")
         args += ["%" + q["q"][:60] + "%"] * 3
@@ -305,7 +438,11 @@ def get_listing(ctx, lid):
 
 
 def h_listing(ctx, lid):
+    release_expired()
     item = get_listing(ctx, lid)
+    if item["status"] in ("hidden", "removed"):
+        need(ctx.uid == item["seller_id"] or (ctx.user and ctx.user["is_owner"]),
+             "Listing not found", 404)
     if ctx.uid != item["seller_id"]:
         db().execute("UPDATE listings SET views=views+1 WHERE id=?", (lid,))
         db().commit()
@@ -356,7 +493,8 @@ def h_update_listing(ctx, lid):
     ctx.auth()
     item = get_listing(ctx, lid)
     need(item["seller_id"] == ctx.uid, "Not your listing", 403)
-    need(item["status"] != "sold", "Sold listings cannot be changed")
+    need(item["status"] not in ("sold", "reserved"), "Sold or reserved listings cannot be changed")
+    need(item["status"] != "removed", "This listing was removed by the marketplace owner")
     f = listing_fields(ctx.body, partial=True)
     if ctx.body.get("status") in ("active", "hidden"):
         f["status"] = ctx.body["status"]
@@ -373,7 +511,7 @@ def h_delete_listing(ctx, lid):
     ctx.auth()
     item = get_listing(ctx, lid)
     need(item["seller_id"] == ctx.uid, "Not your listing", 403)
-    need(item["status"] != "sold", "Sold listings are kept for order history")
+    need(item["status"] not in ("sold", "reserved"), "Sold listings are kept for order history")
     for table in ("favorites", "offers", "messages"):
         db().execute(f"DELETE FROM {table} WHERE listing_id=?", (lid,))
     db().execute("DELETE FROM listings WHERE id=?", (lid,))
@@ -438,8 +576,41 @@ def h_offer_action(ctx, oid):
     return {"ok": True}
 
 
+_last_release = [0.0]
+
+
+def release_expired(force=False):
+    """Put listings back on the rack when a Stripe checkout was abandoned (max once a minute)."""
+    now = time.time()
+    if not force and now - _last_release[0] < 60:
+        return
+    _last_release[0] = now
+    stale = db().execute("SELECT * FROM orders WHERE status='awaiting_payment' AND created<?",
+                         (time.time() - PAY_WINDOW,)).fetchall()
+    for order in stale:
+        try:
+            paid = payments.is_paid(order["stripe_session"]) if order["stripe_session"] else False
+        except payments.PaymentError:
+            continue  # Stripe unreachable: decide on a later request
+        finish_payment(order, paid)
+
+
+def finish_payment(order, paid):
+    with _write_lock:
+        cur = db().execute("UPDATE orders SET status=? WHERE id=? AND status='awaiting_payment'",
+                           ("paid" if paid else "expired", order["id"]))
+        if cur.rowcount:
+            db().execute("UPDATE listings SET status=? WHERE id=? AND status='reserved'",
+                         ("sold" if paid else "active", order["listing_id"]))
+            if paid:
+                db().execute("UPDATE offers SET status='closed' WHERE listing_id=? AND "
+                             "status='pending'", (order["listing_id"],))
+        db().commit()
+
+
 def h_buy(ctx, lid):
     ctx.auth()
+    release_expired()
     with _write_lock:
         item = get_listing(ctx, lid)
         need(item["status"] == "active", "Sorry - this item was just sold", 409)
@@ -448,14 +619,49 @@ def h_buy(ctx, lid):
                             "status='accepted' ORDER BY id DESC", (lid, ctx.uid)).fetchone()
         price = deal["amount"] if deal else item["price"]
         fee = round(price * FEE_PCT + FEE_FLAT, 2)
-        cur = db().execute("INSERT INTO orders(listing_id,buyer_id,seller_id,price,fee,created) "
-                           "VALUES(?,?,?,?,?,?)",
-                           (lid, ctx.uid, item["seller_id"], price, fee, time.time()))
-        db().execute("UPDATE listings SET status='sold' WHERE id=?", (lid,))
-        db().execute("UPDATE offers SET status='closed' WHERE listing_id=? AND status='pending'",
-                     (lid,))
+        stripe = payments.enabled()
+        cur = db().execute("INSERT INTO orders(listing_id,buyer_id,seller_id,price,fee,status,"
+                           "created) VALUES(?,?,?,?,?,?,?)",
+                           (lid, ctx.uid, item["seller_id"], price, fee,
+                            "awaiting_payment" if stripe else "paid", time.time()))
+        oid = cur.lastrowid
+        db().execute("UPDATE listings SET status=? WHERE id=?",
+                     ("reserved" if stripe else "sold", lid))
+        if not stripe:
+            db().execute("UPDATE offers SET status='closed' WHERE listing_id=? AND "
+                         "status='pending'", (lid,))
         db().commit()
-    return {"order_id": cur.lastrowid, "price": price, "fee": fee, "total": round(price + fee, 2)}
+    out = {"order_id": oid, "price": price, "fee": fee, "total": round(price + fee, 2)}
+    if stripe:
+        base = base_url(ctx)
+        try:
+            sid, url = payments.create_checkout(oid, item["title"], price, fee,
+                                                f"{base}/#/paid/{oid}", f"{base}/#/cancel/{oid}")
+        except payments.PaymentError as exc:
+            finish_payment({"id": oid, "listing_id": lid}, False)
+            raise ApiError(502, "Payment could not start: " + str(exc))
+        db().execute("UPDATE orders SET stripe_session=? WHERE id=?", (sid, oid))
+        db().commit()
+        out["checkout_url"] = url
+    return out
+
+
+def h_pay_status(ctx, oid, action):
+    ctx.auth()
+    order = db().execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone()
+    need(order and order["buyer_id"] == ctx.uid, "Order not found", 404)
+    if order["status"] == "awaiting_payment":
+        if action == "cancel":
+            finish_payment(order, False)
+        else:
+            try:
+                paid = payments.is_paid(order["stripe_session"])
+            except payments.PaymentError as exc:
+                raise ApiError(502, "Could not reach the payment provider: " + str(exc))
+            if paid:
+                finish_payment(order, True)
+    status = db().execute("SELECT status FROM orders WHERE id=?", (oid,)).fetchone()[0]
+    return {"status": status, "listing_id": order["listing_id"]}
 
 
 def h_orders(ctx):
@@ -465,7 +671,8 @@ def h_orders(ctx):
             "JOIN listings l ON l.id=o.listing_id JOIN users b ON b.id=o.buyer_id "
             "JOIN users s ON s.id=o.seller_id WHERE ")
     return {"bought": rows(base + "o.buyer_id=? ORDER BY o.id DESC", (ctx.uid,)),
-            "sold": rows(base + "o.seller_id=? ORDER BY o.id DESC", (ctx.uid,))}
+            "sold": rows(base + "o.seller_id=? AND o." + VALID_ORDER + " ORDER BY o.id DESC",
+                         (ctx.uid,))}
 
 
 def h_order_action(ctx, oid, action):
@@ -549,7 +756,7 @@ def h_profile(ctx, username):
     need(u, "User not found", 404)
     out = dict(u)
     out["rating"] = seller_rating(u["id"])
-    out["sold"] = db().execute("SELECT COUNT(*) FROM orders WHERE seller_id=?",
+    out["sold"] = db().execute("SELECT COUNT(*) FROM orders WHERE seller_id=? AND " + VALID_ORDER,
                                (u["id"],)).fetchone()[0]
     out["reviews"] = rows("SELECT r.rating, r.text, r.created, b.username AS buyer FROM reviews r "
                           "JOIN users b ON b.id=r.buyer_id WHERE r.seller_id=? ORDER BY r.id DESC "
@@ -561,8 +768,10 @@ def h_profile(ctx, username):
 
 def h_update_profile(ctx):
     ctx.auth()
-    db().execute("UPDATE users SET bio=?, city=? WHERE id=?",
-                 (clean(ctx.body.get("bio"), 300), clean(ctx.body.get("city"), 40), ctx.uid))
+    email = clean_email(ctx.body.get("email")) if "email" in ctx.body else ctx.user["email"]
+    db().execute("UPDATE users SET bio=?, city=?, email=? WHERE id=?",
+                 (clean(ctx.body.get("bio"), 300), clean(ctx.body.get("city"), 40), email,
+                  ctx.uid))
     db().commit()
     return {"ok": True}
 
@@ -577,22 +786,23 @@ def h_dashboard(ctx):
         lo = start + i * 86400
         days.append({"day": time.strftime("%b %d", time.gmtime(lo)),
                      "total": round(one("SELECT SUM(price) FROM orders WHERE seller_id=? AND "
-                                        "created>=? AND created<?", uid, lo, lo + 86400), 2)})
+                                        "created>=? AND created<? AND " + VALID_ORDER, uid, lo, lo + 86400), 2)})
     activity = rows(
         "SELECT * FROM (SELECT 'sale' AS kind, l.title, b.username AS who, o.price AS amount, "
         "o.created FROM orders o JOIN listings l ON l.id=o.listing_id JOIN users b ON "
-        "b.id=o.buyer_id WHERE o.seller_id=? UNION ALL SELECT 'offer', l.title, b.username, "
+        "b.id=o.buyer_id WHERE o.seller_id=? AND o." + VALID_ORDER + " UNION ALL SELECT 'offer', l.title, b.username, "
         "o.amount, o.created FROM offers o JOIN listings l ON l.id=o.listing_id JOIN users b ON "
         "b.id=o.buyer_id WHERE l.seller_id=? UNION ALL SELECT 'like', l.title, u.username, NULL, "
         "f.created FROM favorites f JOIN listings l ON l.id=f.listing_id JOIN users u ON "
         "u.id=f.user_id WHERE l.seller_id=?) ORDER BY created DESC LIMIT 12", (uid, uid, uid))
     return {
         "stats": {
-            "revenue": round(one("SELECT SUM(price) FROM orders WHERE seller_id=?", uid), 2),
+            "revenue": round(one("SELECT SUM(price) FROM orders WHERE seller_id=? AND " + VALID_ORDER,
+                                 uid), 2),
             "balance": round(ctx.user["balance"], 2),
             "pending": round(one("SELECT SUM(price) FROM orders WHERE seller_id=? AND "
-                                 "status!='complete'", uid), 2),
-            "sold": one("SELECT COUNT(*) FROM orders WHERE seller_id=?", uid),
+                                 "status IN ('paid','shipped')", uid), 2),
+            "sold": one("SELECT COUNT(*) FROM orders WHERE seller_id=? AND " + VALID_ORDER, uid),
             "active": one("SELECT COUNT(*) FROM listings WHERE seller_id=? AND status='active'",
                           uid),
             "views": one("SELECT SUM(views) FROM listings WHERE seller_id=?", uid),
@@ -631,6 +841,93 @@ def h_del_ad(ctx, aid):
     return h_ads(ctx)
 
 
+def h_report(ctx, lid):
+    ctx.auth()
+    rate_hit("report", ctx.ip)
+    item = get_listing(ctx, lid)
+    need(item["seller_id"] != ctx.uid, "You cannot report your own listing")
+    reason = clean(ctx.body.get("reason"), 300)
+    need(len(reason) >= 3, "Tell us briefly what's wrong")
+    need(not db().execute("SELECT 1 FROM reports WHERE listing_id=? AND reporter_id=? AND "
+                          "status='open'", (lid, ctx.uid)).fetchone(),
+         "You already reported this listing")
+    db().execute("INSERT INTO reports(listing_id,reporter_id,reason,created) VALUES(?,?,?,?)",
+                 (lid, ctx.uid, reason, time.time()))
+    db().commit()
+    return {"ok": True}
+
+
+def owner_only(ctx):
+    ctx.auth()
+    need(ctx.user["is_owner"], "Only the marketplace owner can do that", 403)
+
+
+def h_admin(ctx):
+    owner_only(ctx)
+    one = lambda sql, *a: db().execute(sql, a).fetchone()[0] or 0  # noqa: E731
+    return {
+        "stats": {
+            "users": one("SELECT COUNT(*) FROM users"),
+            "banned": one("SELECT COUNT(*) FROM users WHERE banned=1"),
+            "active": one("SELECT COUNT(*) FROM listings WHERE status='active'"),
+            "orders": one("SELECT COUNT(*) FROM orders WHERE " + VALID_ORDER),
+            "gmv": round(one("SELECT SUM(price) FROM orders WHERE " + VALID_ORDER), 2),
+            "fees": round(one("SELECT SUM(fee) FROM orders WHERE " + VALID_ORDER), 2),
+            "open_reports": one("SELECT COUNT(*) FROM reports WHERE status='open'"),
+        },
+        "reports": rows(
+            "SELECT r.id, r.reason, r.created, r.listing_id, l.title, l.image, l.status AS "
+            "listing_status, s.username AS seller, s.id AS seller_id, u.username AS reporter "
+            "FROM reports r JOIN listings l ON l.id=r.listing_id JOIN users s ON "
+            "s.id=l.seller_id JOIN users u ON u.id=r.reporter_id WHERE r.status='open' "
+            "ORDER BY r.id DESC LIMIT 100"),
+        "users": rows(
+            "SELECT u.id, u.username, u.email, u.city, u.banned, u.is_owner, u.is_demo, "
+            "u.created, (SELECT COUNT(*) FROM listings l WHERE l.seller_id=u.id AND "
+            "l.status='active') AS active, (SELECT COUNT(*) FROM reports r JOIN listings l ON "
+            "l.id=r.listing_id WHERE l.seller_id=u.id) AS reports FROM users u "
+            "ORDER BY u.id DESC LIMIT 200"),
+        "payments": "stripe" if payments.enabled() else "simulated",
+        "email": mailer.enabled(),
+    }
+
+
+def h_admin_report(ctx, rid):
+    owner_only(ctx)
+    report = db().execute("SELECT * FROM reports WHERE id=?", (rid,)).fetchone()
+    need(report, "Report not found", 404)
+    action = ctx.body.get("action")
+    need(action in ("dismiss", "remove"), "Action must be dismiss or remove")
+    if action == "remove":
+        db().execute("UPDATE listings SET status='removed' WHERE id=? AND status IN "
+                     "('active','hidden')", (report["listing_id"],))
+        db().execute("UPDATE reports SET status='actioned' WHERE listing_id=? AND status='open'",
+                     (report["listing_id"],))
+    else:
+        db().execute("UPDATE reports SET status='dismissed' WHERE id=?", (rid,))
+    db().commit()
+    return {"ok": True}
+
+
+def h_admin_user(ctx, uid):
+    owner_only(ctx)
+    user = db().execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
+    need(user, "User not found", 404)
+    action = ctx.body.get("action")
+    need(action in ("ban", "unban", "reset_link"), "Unknown action")
+    if action == "reset_link":
+        return {"link": reset_link(ctx, uid)}
+    need(not user["is_owner"], "The owner account cannot be suspended")
+    banned = 1 if action == "ban" else 0
+    db().execute("UPDATE users SET banned=? WHERE id=?", (banned, uid))
+    if banned:
+        db().execute("DELETE FROM sessions WHERE user_id=?", (uid,))
+        db().execute("UPDATE listings SET status='hidden' WHERE seller_id=? AND status='active'",
+                     (uid,))
+    db().commit()
+    return {"ok": True}
+
+
 def h_ai(ctx):
     ctx.auth()
     need(clean(ctx.body.get("title"), 80), "Add a title first")
@@ -654,7 +951,13 @@ ROUTES = [
     ("POST", r"/api/messages", h_send), ("GET", r"/api/users/([A-Za-z0-9_]{3,24})", h_profile),
     ("GET", r"/api/dashboard", h_dashboard), ("GET", r"/api/ads", h_ads),
     ("POST", r"/api/ads", h_add_ad), ("DELETE", r"/api/ads/(\d+)", h_del_ad),
-    ("POST", r"/api/ai/describe", h_ai),
+    ("POST", r"/api/ai/describe", h_ai), ("GET", r"/api/health", h_health),
+    ("POST", r"/api/password/forgot", h_forgot), ("POST", r"/api/password/reset", h_reset),
+    ("POST", r"/api/password/change", h_change_password),
+    ("POST", r"/api/orders/(\d+)/(confirm|cancel)", h_pay_status),
+    ("POST", r"/api/listings/(\d+)/report", h_report), ("GET", r"/api/admin", h_admin),
+    ("POST", r"/api/admin/reports/(\d+)", h_admin_report),
+    ("POST", r"/api/admin/users/(\d+)", h_admin_user),
 ]
 ROUTES = [(m, re.compile("^" + p + "$"), fn) for m, p, fn in ROUTES]
 MIME = {".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8",
@@ -667,12 +970,16 @@ class Ctx:
     def __init__(self, handler, query, body):
         self.query, self.body, self.set_cookie = query, body, None
         self.user, self.token = None, None
+        self.host = handler.headers.get("Host", f"{HOST}:{PORT}")
+        self.ip = handler.client_address[0]
+        if TRUST_PROXY and handler.headers.get("X-Forwarded-For"):
+            self.ip = handler.headers["X-Forwarded-For"].split(",")[0].strip()
         jar = cookies.SimpleCookie(handler.headers.get("Cookie", ""))
         if "dr_session" in jar:
             self.token = jar["dr_session"].value
             self.user = db().execute(
                 "SELECT u.* FROM users u JOIN sessions s ON s.user_id=u.id WHERE s.token=? AND "
-                "s.created>?", (self.token, time.time() - 30 * 86400)).fetchone()
+                "s.created>? AND u.banned=0", (self.token, time.time() - 30 * 86400)).fetchone()
         self.uid = self.user["id"] if self.user else 0
 
     def auth(self):
@@ -685,7 +992,7 @@ class Ctx:
         self.user = db().execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
         self.uid = uid
         self.set_cookie = (f"dr_session={self.token}; Path=/; Max-Age=2592000; HttpOnly; "
-                           "SameSite=Lax")
+                           "SameSite=Lax" + ("; Secure" if SECURE_COOKIES else ""))
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -703,6 +1010,9 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("X-Frame-Options", "DENY")
         self.send_header("Referrer-Policy", "same-origin")
+        self.send_header("Content-Security-Policy", CSP)
+        if SECURE_COOKIES:
+            self.send_header("Strict-Transport-Security", "max-age=31536000")
         for key, value in (extra or {}).items():
             self.send_header(key, value)
         self.end_headers()
@@ -783,7 +1093,9 @@ if __name__ == "__main__":
         import seed
         seed.run()
     server = make_server()
-    print(f"\n  DriftRack is live  ->  http://{HOST}:{PORT}\n  Ctrl+C to stop\n")
+    print(f"\n  DriftRack is live  ->  http://{HOST}:{PORT}"
+          f"\n  Payments: {'Stripe' if payments.enabled() else 'simulated'}"
+          f" | Email: {'on' if mailer.enabled() else 'off'}\n  Ctrl+C to stop\n")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

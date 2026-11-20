@@ -131,6 +131,10 @@ select option { background: var(--panel-solid); }
 .badge.complete, .badge.accepted, .badge.active { background: rgba(61, 242, 180, 0.18); color: var(--mint); }
 .badge.paid, .badge.pending { background: rgba(255, 179, 71, 0.2); color: var(--amber); }
 .badge.shipped { background: rgba(139, 108, 255, 0.25); color: #cfc2ff; }
+.badge.reserved, .badge.awaiting_payment { background: rgba(139, 108, 255, 0.25); color: #cfc2ff; }
+.badge.expired, .badge.hidden, .badge.removed { background: rgba(255, 255, 255, 0.08); color: var(--muted); }
+.inp { padding: 11px 14px; border-radius: 12px; border: 1px solid var(--line); background: rgba(255, 255, 255, 0.07); min-width: 0; }
+.linkish { background: none; border: 0; padding: 0; color: var(--muted); text-decoration: underline; cursor: pointer; justify-self: start; font-size: 13.500px; }
 .card .flag { position: absolute; top: 9px; left: 9px; }
 
 /* ---------- item page ---------- */
