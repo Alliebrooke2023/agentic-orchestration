@@ -320,6 +320,20 @@ def h_listing(ctx, lid):
     return {"listing": item}
 
 
+# Column names can't be passed as SQL parameters, so only these fixed names
+# are ever written into the UPDATE statement. Values still go through "?".
+EDITABLE_LISTING_COLUMNS = ("title", "price", "category", "condition", "description",
+                            "size", "brand", "status", "image")
+
+# Rows that point at a listing and are removed with it. Fixed statements, no
+# table names formatted into SQL.
+LISTING_CHILD_DELETES = (
+    "DELETE FROM favorites WHERE listing_id=?",
+    "DELETE FROM offers WHERE listing_id=?",
+    "DELETE FROM messages WHERE listing_id=?",
+)
+
+
 def listing_fields(body, partial=False):
     out = {}
     if not partial or "title" in body:
@@ -363,8 +377,10 @@ def h_update_listing(ctx, lid):
     if ctx.body.get("image"):
         f["image"] = save_image(ctx.body["image"])
     if f:
-        sets = ",".join(f"{k}=?" for k in f)
-        db().execute(f"UPDATE listings SET {sets} WHERE id=?", list(f.values()) + [lid])
+        cols = [k for k in EDITABLE_LISTING_COLUMNS if k in f]
+        need(len(cols) == len(f), "Unknown listing field", 400)
+        sets = ",".join(f"{k}=?" for k in cols)
+        db().execute(f"UPDATE listings SET {sets} WHERE id=?", [f[k] for k in cols] + [lid])
         db().commit()
     return {"ok": True}
 
@@ -374,8 +390,8 @@ def h_delete_listing(ctx, lid):
     item = get_listing(ctx, lid)
     need(item["seller_id"] == ctx.uid, "Not your listing", 403)
     need(item["status"] != "sold", "Sold listings are kept for order history")
-    for table in ("favorites", "offers", "messages"):
-        db().execute(f"DELETE FROM {table} WHERE listing_id=?", (lid,))
+    for sql in LISTING_CHILD_DELETES:
+        db().execute(sql, (lid,))
     db().execute("DELETE FROM listings WHERE id=?", (lid,))
     db().commit()
     return {"ok": True}

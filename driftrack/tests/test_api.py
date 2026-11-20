@@ -124,6 +124,19 @@ class DriftRackTest(unittest.TestCase):
         self.assertEqual(self.seller.call("DELETE", f"/api/listings/{lid}")[0], 200)
         self.assertEqual(self.anon.call("GET", f"/api/listings/{lid}")[0], 404)
 
+    def test_listing_update_only_writes_known_columns(self):
+        full = {"title": "Coat", "price": 9, "category": "Men", "condition": "Good",
+                "description": "", "size": "", "brand": ""}
+        self.assertTrue(set(app.listing_fields(full)) <= set(app.EDITABLE_LISTING_COLUMNS))
+        lid = self.new_listing(40)
+        s, _ = self.seller.call("PATCH", f"/api/listings/{lid}",
+                                {"price": 30, "views=999,seller_id": 1, "status=?--": "x"})
+        self.assertEqual(s, 200)
+        _, out = self.anon.call("GET", f"/api/listings/{lid}")
+        self.assertEqual(out["listing"]["price"], 30)
+        self.assertNotEqual(out["listing"]["views"], 999)
+        self.assertEqual(self.seller.call("DELETE", f"/api/listings/{lid}")[0], 200)
+
     def test_full_sale_flow(self):
         lid = self.new_listing(40)
         self.assertEqual(self.seller.call("POST", f"/api/listings/{lid}/buy")[0], 400)
