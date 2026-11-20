@@ -1,0 +1,35 @@
+# driftrack/render.yaml - one-click deploy on Render (render.com). Fill the secrets in the dashboard.
+services:
+  - type: web
+    name: driftrack
+    runtime: docker
+    rootDir: driftrack
+    plan: starter
+    healthCheckPath: /api/health
+    disk:
+      name: driftrack-data
+      mountPath: /data
+      sizeGB: 1
+    envVars:
+      - key: DRIFTRACK_PORT
+        value: "8750"
+      - key: DRIFTRACK_SECURE_COOKIES
+        value: "1"
+      - key: DRIFTRACK_TRUST_PROXY
+        value: "1"
+      - key: DRIFTRACK_PUBLIC_URL
+        sync: false
+      - key: STRIPE_SECRET_KEY
+        sync: false
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: SMTP_HOST
+        sync: false
+      - key: SMTP_PORT
+        sync: false
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASS
+        sync: false
+      - key: SMTP_FROM
+        sync: false

@@ -1,0 +1,412 @@
+# driftrack/tests/test_api.py
+"""End-to-end API tests against a real server on a temp database.
+
+Run:  python -m unittest discover -s tests -v     (from the driftrack folder)
+"""
+import base64
+import http.cookiejar
+import json
+import os
+import sys
+import tempfile
+import threading
+import unittest
+import urllib.error
+import urllib.request
+
+TMP = tempfile.mkdtemp(prefix="driftrack_test_")
+os.environ["DRIFTRACK_DATA"] = TMP
+os.environ["DRIFTRACK_QUIET"] = "1"
+os.environ.pop("OPENROUTER_API_KEY", None)
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import app  # noqa: E402
+import seed  # noqa: E402
+
+PNG = "data:image/png;base64," + base64.b64encode(
+    b"\x89PNG\r\n\x1a\n" + b"\x00" * 64).decode()
+
+
+class Client:
+    def __init__(self, base):
+        self.base = base
+        self.opener = urllib.request.build_opener(
+            urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+
+    def call(self, method, path, body=None, headers=None):
+        data = json.dumps(body).encode() if body is not None else None
+        req = urllib.request.Request(self.base + path, data=data, method=method,
+                                     headers={"Content-Type": "application/json",
+                                              **(headers or {})})
+        try:
+            with self.opener.open(req) as resp:
+                return resp.status, json.loads(resp.read())
+        except urllib.error.HTTPError as exc:
+            return exc.code, json.loads(exc.read() or b"{}")
+
+
+def setUpModule():
+    B = Base
+    B.server = app.make_server("127.0.0.1", 0)
+    B.base = f"http://127.0.0.1:{B.server.server_address[1]}"
+    threading.Thread(target=B.server.serve_forever, daemon=True).start()
+    seed.run()
+    B.seller, B.buyer, B.anon = Client(B.base), Client(B.base), Client(B.base)
+    s, out = B.seller.call("POST", "/api/register", {"username": "owner1", "password": "secret1"})
+    assert s == 200 and out["user"]["is_owner"], out
+    s, out = B.buyer.call("POST", "/api/register", {"username": "buyer1", "password": "secret1"})
+    assert s == 200 and not out["user"]["is_owner"], out
+    B.buyer_id = out["user"]["id"]
+
+
+def tearDownModule():
+    Base.server.shutdown()
+    Base.server.server_close()
+
+
+class Base(unittest.TestCase):
+    def setUp(self):
+        app.RATE.clear()
+
+    def new_listing(self, price=40):
+        s, out = self.seller.call("POST", "/api/listings", {
+            "title": "Test jacket", "price": price, "category": "Men", "condition": "Good",
+            "brand": "Acme", "size": "M", "description": "<script>alert(1)</script>",
+            "image": PNG})
+        self.assertEqual(s, 200, out)
+        return out["id"]
+
+
+
+class DriftRackTest(Base):
+    def test_static_and_traversal(self):
+        with urllib.request.urlopen(self.base + "/") as r:
+            self.assertIn(b"DriftRack", r.read())
+        for bad in ("/../app.py", "/..%2fapp.py", "/uploads/../driftrack.db"):
+            with self.assertRaises(urllib.error.HTTPError) as cm:
+                urllib.request.urlopen(self.base + bad)
+            self.assertEqual(cm.exception.code, 404)
+
+    def test_auth_rules(self):
+        self.assertEqual(self.anon.call("POST", "/api/listings", {})[0], 401)
+        self.assertEqual(self.anon.call("GET", "/api/dashboard")[0], 401)
+        self.assertEqual(self.anon.call("POST", "/api/login",
+                                        {"username": "owner1", "password": "nope"})[0], 401)
+        self.assertEqual(self.anon.call("POST", "/api/register",
+                                        {"username": "owner1", "password": "secret1"})[0], 409)
+        self.assertEqual(self.anon.call("POST", "/api/register",
+                                        {"username": "a b", "password": "secret1"})[0], 400)
+        s, _ = self.seller.call("POST", "/api/profile", {"bio": "x"},
+                                {"Origin": "http://evil.example"})
+        self.assertEqual(s, 403)
+
+    def test_browse_search_filter(self):
+        s, out = self.anon.call("GET", "/api/listings")
+        self.assertEqual(s, 200)
+        self.assertGreaterEqual(len(out["listings"]), 24)
+        _, out = self.anon.call("GET", "/api/listings?q=Levi&category=Women")
+        self.assertTrue(out["listings"])
+        self.assertTrue(all(x["category"] == "Women" for x in out["listings"]))
+        _, out = self.anon.call("GET", "/api/listings?sort=low&max=20")
+        prices = [x["price"] for x in out["listings"]]
+        self.assertEqual(prices, sorted(prices))
+        self.assertTrue(all(p <= 20 for p in prices))
+        _, out = self.anon.call("GET", "/api/listings?q=%27%20OR%201=1--")
+        self.assertEqual(out["listings"], [])
+
+    def test_listing_validation_and_ownership(self):
+        lid = self.new_listing()
+        bad = {"title": "x", "price": 5, "category": "Men", "condition": "Good"}
+        self.assertEqual(self.seller.call("POST", "/api/listings", bad)[0], 400)
+        bad.update(title="Fine title", price=-3)
+        self.assertEqual(self.seller.call("POST", "/api/listings", bad)[0], 400)
+        bad.update(price=5, image="data:image/svg+xml;base64,PHN2Zz4=")
+        self.assertEqual(self.seller.call("POST", "/api/listings", bad)[0], 400)
+        bad.update(image="data:image/png;base64," + base64.b64encode(b"<html>").decode())
+        self.assertEqual(self.seller.call("POST", "/api/listings", bad)[0], 400)
+        self.assertEqual(self.buyer.call("PATCH", f"/api/listings/{lid}", {"price": 1})[0], 403)
+        self.assertEqual(self.buyer.call("DELETE", f"/api/listings/{lid}")[0], 403)
+        self.assertEqual(self.seller.call("PATCH", f"/api/listings/{lid}", {"price": 35})[0], 200)
+        _, out = self.anon.call("GET", f"/api/listings/{lid}")
+        self.assertEqual(out["listing"]["price"], 35)
+        self.assertTrue(out["listing"]["image"].startswith("/uploads/"))
+        self.assertEqual(self.seller.call("DELETE", f"/api/listings/{lid}")[0], 200)
+        self.assertEqual(self.anon.call("GET", f"/api/listings/{lid}")[0], 404)
+
+    def test_full_sale_flow(self):
+        lid = self.new_listing(40)
+        self.assertEqual(self.seller.call("POST", f"/api/listings/{lid}/buy")[0], 400)
+        s, out = self.buyer.call("POST", f"/api/listings/{lid}/favorite")
+        self.assertTrue(out["liked"])
+        self.assertEqual(len(self.buyer.call("GET", "/api/favorites")[1]["listings"]), 1)
+        self.assertEqual(self.buyer.call("POST", f"/api/listings/{lid}/offer", {"amount": 5})[0], 400)
+        self.assertEqual(self.buyer.call("POST", f"/api/listings/{lid}/offer", {"amount": 50})[0], 400)
+        self.assertEqual(self.buyer.call("POST", f"/api/listings/{lid}/offer", {"amount": 30})[0], 200)
+        _, offers = self.seller.call("GET", "/api/offers")
+        oid = offers["incoming"][0]["id"]
+        self.assertEqual(self.buyer.call("POST", f"/api/offers/{oid}", {"action": "accept"})[0], 403)
+        self.assertEqual(self.seller.call("POST", f"/api/offers/{oid}", {"action": "accept"})[0], 200)
+        s, order = self.buyer.call("POST", f"/api/listings/{lid}/buy")
+        self.assertEqual((s, order["price"], order["fee"], order["total"]), (200, 30, 2.2, 32.2))
+        self.assertEqual(self.buyer.call("POST", f"/api/listings/{lid}/buy")[0], 409)
+        oid = order["order_id"]
+        self.assertEqual(self.buyer.call("POST", f"/api/orders/{oid}/received")[0], 400)
+        self.assertEqual(self.buyer.call("POST", f"/api/orders/{oid}/ship")[0], 403)
+        self.assertEqual(self.seller.call("POST", f"/api/orders/{oid}/ship")[0], 200)
+        self.assertEqual(self.buyer.call("POST", f"/api/orders/{oid}/received")[0], 200)
+        self.assertEqual(self.buyer.call("POST", f"/api/orders/{oid}/review",
+                                         {"rating": 9})[0], 400)
+        self.assertEqual(self.buyer.call("POST", f"/api/orders/{oid}/review",
+                                         {"rating": 5, "text": "Great"})[0], 200)
+        self.assertEqual(self.buyer.call("POST", f"/api/orders/{oid}/review",
+                                         {"rating": 5})[0], 400)
+        _, dash = self.seller.call("GET", "/api/dashboard")
+        self.assertEqual(dash["stats"]["revenue"], 30)
+        self.assertEqual(dash["stats"]["balance"], 30)
+        self.assertEqual(dash["stats"]["sold"], 1)
+        self.assertEqual(dash["rating"], {"avg": 5.0, "count": 1})
+        self.assertEqual(len(dash["days"]), 14)
+        self.assertEqual(dash["days"][-1]["total"], 30)
+        _, prof = self.anon.call("GET", "/api/users/owner1")
+        self.assertEqual(prof["profile"]["reviews"][0]["text"], "Great")
+        self.assertEqual(self.seller.call("DELETE", f"/api/listings/{lid}")[0], 400)
+
+    def test_messages(self):
+        lid = self.new_listing()
+        _, me = self.seller.call("GET", "/api/me")
+        sid = me["user"]["id"]
+        self.assertEqual(self.buyer.call("POST", "/api/messages",
+                                         {"listing_id": lid, "to": sid, "body": "Hi?"})[0], 200)
+        self.assertEqual(self.seller.call("POST", "/api/messages", {
+            "listing_id": lid, "to": self.buyer_id, "body": "Yes!"})[0], 200)
+        _, th = self.seller.call("GET", "/api/threads")
+        self.assertEqual((len(th["threads"]), th["threads"][0]["last"]), (1, "Yes!"))
+        _, ms = self.buyer.call("GET", f"/api/messages?listing={lid}&with={sid}")
+        self.assertEqual([m["body"] for m in ms["messages"]], ["Hi?", "Yes!"])
+        _, ms = self.anon.call("GET", f"/api/messages?listing={lid}&with={sid}")
+        self.assertNotIn("messages", ms)
+
+    def test_ads_owner_only_and_ai_fallback(self):
+        _, ads = self.anon.call("GET", "/api/ads")
+        n = len(ads["ads"])
+        self.assertGreaterEqual(n, 5)
+        self.assertEqual(self.buyer.call("POST", "/api/ads", {"text": "Hack sale"})[0], 403)
+        s, ads = self.seller.call("POST", "/api/ads", {"text": "Friday shoe sale"})
+        self.assertEqual((s, len(ads["ads"])), (200, n + 1))
+        aid = ads["ads"][-1]["id"]
+        self.assertEqual(self.buyer.call("DELETE", f"/api/ads/{aid}")[0], 403)
+        self.assertEqual(len(self.seller.call("DELETE", f"/api/ads/{aid}")[1]["ads"]), n)
+        s, out = self.seller.call("POST", "/api/ai/describe",
+                                  {"title": "Wool coat", "condition": "Like new"})
+        self.assertEqual((s, out["model"]), (200, "local-template"))
+        self.assertIn("Wool coat", out["text"])
+
+    def test_ai_switches_models_when_one_runs_out(self):
+        calls = []
+
+        def fake_urlopen(req, timeout=0):
+            model = json.loads(req.data)["model"]
+            calls.append(model)
+            if model == "model-a":
+                raise urllib.error.HTTPError(req.full_url, 402, "Payment Required", {}, None)
+            if model == "model-b":
+                raise urllib.error.HTTPError(req.full_url, 429, "Too Many", {}, None)
+
+            class Resp:
+                def __enter__(self): return self
+                def __exit__(self, *a): return False
+                def read(self):
+                    return json.dumps({"choices": [{"message": {"content": "Nice coat."}}]}).encode()
+            return Resp()
+
+        real = app.urllib.request.urlopen
+        os.environ.update(OPENROUTER_API_KEY="test", DRIFTRACK_AI_MODELS="model-a,model-b,model-c")
+        app.urllib.request.urlopen = fake_urlopen
+        try:
+            out = app.ai_describe({"title": "Coat"})
+        finally:
+            app.urllib.request.urlopen = real
+            os.environ.pop("OPENROUTER_API_KEY")
+            os.environ.pop("DRIFTRACK_AI_MODELS")
+        self.assertEqual(calls, ["model-a", "model-b", "model-c"])
+        self.assertEqual((out["model"], out["text"]), ("model-c", "Nice coat."))
+        self.assertEqual([t["error"] for t in out["tried"]], ["HTTP 402", "HTTP 429"])
+
+
+class LaunchFeaturesTest(Base):
+    """Payments, password recovery, moderation, rate limits, hardening."""
+
+    @classmethod
+    def setUpClass(cls):
+        app.RATE.clear()
+        cls.rogue = Client(cls.base)
+        s, out = cls.rogue.call("POST", "/api/register", {"username": "rogue1", "password": "secret1",
+                                                          "email": "rogue@example.com"})
+        assert s == 200, out
+        cls.rogue_id = out["user"]["id"]
+
+    def test_health_and_headers(self):
+        self.assertEqual(self.anon.call("GET", "/api/health")[1]["ok"], True)
+        with urllib.request.urlopen(self.base + "/") as r:
+            self.assertIn("frame-ancestors 'none'", r.headers["Content-Security-Policy"])
+        self.assertEqual(self.anon.call("GET", "/api/meta")[1]["payments"], "simulated")
+
+    def test_hidden_listings_do_not_leak(self):
+        lid = self.new_listing()
+        self.seller.call("PATCH", f"/api/listings/{lid}", {"status": "hidden"})
+        _, out = self.anon.call("GET", "/api/listings?status=hidden")
+        self.assertNotIn(lid, [x["id"] for x in out["listings"]])
+        self.assertEqual(self.anon.call("GET", f"/api/listings/{lid}")[0], 404)
+        self.assertEqual(self.seller.call("GET", f"/api/listings/{lid}")[0], 200)
+
+    def test_login_rate_limit(self):
+        bad = {"username": "buyer1", "password": "wrong!"}
+        for _ in range(5):
+            self.assertEqual(self.anon.call("POST", "/api/login", bad)[0], 401)
+        self.assertEqual(self.anon.call("POST", "/api/login", bad)[0], 429)
+        good = {"username": "buyer1", "password": "secret1"}
+        self.assertEqual(self.anon.call("POST", "/api/login", good)[0], 429)
+        app.RATE.clear()
+        self.assertEqual(Client(self.base).call("POST", "/api/login", good)[0], 200)
+
+    def test_email_validation(self):
+        s, _ = self.anon.call("POST", "/api/register", {"username": "mailtest", "password": "secret1",
+                                                        "email": "not-an-email"})
+        self.assertEqual(s, 400)
+
+    def test_change_password(self):
+        c = Client(self.base)
+        c.call("POST", "/api/register", {"username": "changer", "password": "first11"})
+        other = Client(self.base)
+        other.call("POST", "/api/login", {"username": "changer", "password": "first11"})
+        self.assertEqual(c.call("POST", "/api/password/change", {"old": "x", "new": "second22"})[0], 403)
+        self.assertEqual(c.call("POST", "/api/password/change",
+                                {"old": "first11", "new": "second22"})[0], 200)
+        self.assertIsNotNone(c.call("GET", "/api/me")[1]["user"])
+        self.assertIsNone(other.call("GET", "/api/me")[1]["user"])  # other sessions signed out
+        self.assertEqual(Client(self.base).call("POST", "/api/login", {
+            "username": "changer", "password": "second22"})[0], 200)
+
+    def test_reset_link_and_forgot(self):
+        self.assertEqual(self.buyer.call("POST", f"/api/admin/users/{self.rogue_id}",
+                                         {"action": "reset_link"})[0], 403)
+        _, out = self.seller.call("POST", f"/api/admin/users/{self.rogue_id}",
+                                  {"action": "reset_link"})
+        token = out["link"].split("/reset/")[1]
+        self.assertEqual(self.anon.call("POST", "/api/password/reset",
+                                        {"token": "bogus", "password": "newpass1"})[0], 400)
+        self.assertEqual(self.anon.call("POST", "/api/password/reset",
+                                        {"token": token, "password": "newpass1"})[0], 200)
+        self.assertEqual(self.anon.call("POST", "/api/password/reset",
+                                        {"token": token, "password": "again111"})[0], 400)
+        r = Client(self.base)
+        self.assertEqual(r.call("POST", "/api/login",
+                                {"username": "rogue1", "password": "newpass1"})[0], 200)
+        sent = []
+        app.mailer.send, real = (lambda to, subj, body: sent.append((to, body)) or True), app.mailer.send
+        os.environ.update(SMTP_HOST="smtp.test", SMTP_FROM="shop@example.com")
+        app.PUBLIC_URL = "https://shop.example.com"
+        try:
+            s, out = self.anon.call("POST", "/api/password/forgot", {"username": "rogue1"})
+            self.assertEqual(self.anon.call("POST", "/api/password/forgot",
+                                            {"username": "nobody"})[1], out)
+        finally:
+            app.mailer.send = real
+            app.PUBLIC_URL = ""
+            os.environ.pop("SMTP_HOST"); os.environ.pop("SMTP_FROM")
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(sent[0][0], "rogue@example.com")
+        self.assertIn("https://shop.example.com/#/reset/", sent[0][1])
+
+    def test_report_and_moderation(self):
+        lid = self.new_listing()
+        self.assertEqual(self.seller.call("POST", f"/api/listings/{lid}/report",
+                                          {"reason": "mine"})[0], 400)
+        self.assertEqual(self.buyer.call("POST", f"/api/listings/{lid}/report",
+                                         {"reason": "Counterfeit item"})[0], 200)
+        self.assertEqual(self.buyer.call("POST", f"/api/listings/{lid}/report",
+                                         {"reason": "Again"})[0], 400)
+        self.assertEqual(self.buyer.call("GET", "/api/admin")[0], 403)
+        _, adm = self.seller.call("GET", "/api/admin")
+        rep = [r for r in adm["reports"] if r["listing_id"] == lid][0]
+        self.assertGreaterEqual(adm["stats"]["open_reports"], 1)
+        self.assertEqual(self.seller.call("POST", f"/api/admin/reports/{rep['id']}",
+                                          {"action": "remove"})[0], 200)
+        self.assertEqual(self.anon.call("GET", f"/api/listings/{lid}")[0], 404)
+        self.assertEqual(self.seller.call("PATCH", f"/api/listings/{lid}",
+                                          {"status": "active"})[0], 400)
+
+    def test_ban_and_unban(self):
+        c = Client(self.base)
+        _, out = c.call("POST", "/api/register", {"username": "banme", "password": "secret1"})
+        uid = out["user"]["id"]
+        c.call("POST", "/api/listings", {"title": "Ban test", "price": 9, "category": "Men",
+                                         "condition": "Good"})
+        _, owner = self.seller.call("GET", "/api/me")
+        self.assertEqual(self.seller.call("POST", f"/api/admin/users/{owner['user']['id']}",
+                                          {"action": "ban"})[0], 400)
+        self.assertEqual(self.seller.call("POST", f"/api/admin/users/{uid}", {"action": "ban"})[0], 200)
+        self.assertIsNone(c.call("GET", "/api/me")[1]["user"])
+        self.assertEqual(Client(self.base).call("POST", "/api/login", {
+            "username": "banme", "password": "secret1"})[0], 403)
+        _, out = self.anon.call("GET", "/api/listings?seller=banme")
+        self.assertEqual(out["listings"], [])
+        self.seller.call("POST", f"/api/admin/users/{uid}", {"action": "unban"})
+        self.assertEqual(Client(self.base).call("POST", "/api/login", {
+            "username": "banme", "password": "secret1"})[0], 200)
+
+    def test_stripe_checkout_flow(self):
+        state = {"paid": False, "created": []}
+
+        def fake_call(method, path, params=None):
+            if method == "POST":
+                state["created"].append(params)
+                return {"id": "cs_test_1", "url": "https://checkout.stripe.com/c/pay/cs_test_1"}
+            return {"payment_status": "paid" if state["paid"] else "unpaid"}
+
+        real = app.payments._call
+        app.payments._call = fake_call
+        os.environ["STRIPE_SECRET_KEY"] = "sk_test_x"
+        try:
+            lid = self.new_listing(40)
+            s, out = self.buyer.call("POST", f"/api/listings/{lid}/buy")
+            self.assertEqual(s, 200, out)
+            self.assertTrue(out["checkout_url"].startswith("https://checkout.stripe.com/"))
+            p = state["created"][0]
+            self.assertEqual((p["line_items[0][price_data][unit_amount]"],
+                              p["line_items[1][price_data][unit_amount]"]), ("4000", "270"))
+            self.assertIn(f"/#/paid/{out['order_id']}", p["success_url"])
+            _, item = self.anon.call("GET", f"/api/listings/{lid}")
+            self.assertEqual(item["listing"]["status"], "reserved")
+            self.assertEqual(self.anon.call("POST", f"/api/listings/{lid}/buy")[0], 401)
+            other = Client(self.base)
+            other.call("POST", "/api/register", {"username": "buyer2", "password": "secret1"})
+            self.assertEqual(other.call("POST", f"/api/listings/{lid}/buy")[0], 409)
+            oid = out["order_id"]
+            self.assertEqual(other.call("POST", f"/api/orders/{oid}/confirm")[0], 404)
+            self.assertEqual(self.buyer.call("POST", f"/api/orders/{oid}/confirm")[1]["status"],
+                             "awaiting_payment")
+            self.assertNotIn(lid, [o["listing_id"] for o in self.seller.call("GET", "/api/orders")[1]["sold"]])
+            state["paid"] = True
+            self.assertEqual(self.buyer.call("POST", f"/api/orders/{oid}/confirm")[1]["status"], "paid")
+            self.assertEqual(self.anon.call("GET", f"/api/listings/{lid}")[1]["listing"]["status"], "sold")
+            # abandoned checkout: cancel puts it back on the rack
+            state["paid"] = False
+            lid2 = self.new_listing(20)
+            _, out2 = self.buyer.call("POST", f"/api/listings/{lid2}/buy")
+            self.assertEqual(self.buyer.call("POST", f"/api/orders/{out2['order_id']}/cancel")[1]["status"],
+                             "expired")
+            self.assertEqual(self.anon.call("GET", f"/api/listings/{lid2}")[1]["listing"]["status"], "active")
+            # timed-out checkout is released on the next browse
+            _, out3 = self.buyer.call("POST", f"/api/listings/{lid2}/buy")
+            app.db().execute("UPDATE orders SET created=created-3600 WHERE id=?", (out3["order_id"],))
+            app.db().commit()
+            app._last_release[0] = 0
+            self.anon.call("GET", "/api/listings")
+            self.assertEqual(self.anon.call("GET", f"/api/listings/{lid2}")[1]["listing"]["status"], "active")
+        finally:
+            app.payments._call = real
+            os.environ.pop("STRIPE_SECRET_KEY")
+
+
+if __name__ == "__main__":
+    unittest.main()
