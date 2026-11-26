@@ -186,7 +186,8 @@ TOKEN = ""
 
 @app.before_request
 def auth():
-    if TOKEN and request.path.startswith("/api") and request.headers.get("X-Token", request.args.get("t")) != TOKEN:
+    # every route, incl. "/" (it embeds the token) and /stream (live video)
+    if TOKEN and not secrets.compare_digest(request.headers.get("X-Token", request.args.get("t", "")), TOKEN):
         abort(401)
 
 
@@ -245,11 +246,13 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--demo", type=int, default=0, help="add N synthetic cams")
     ap.add_argument("--port", type=int, default=8765)
-    ap.add_argument("--host", default="0.0.0.0")
+    ap.add_argument("--host", default="0.0.0.0", help="127.0.0.1 = this PC only")
     ap.add_argument("--token", default="", help="require token for remote API")
     ap.add_argument("--auto", action="store_true", help="auto-add discovered local+ONVIF cams")
     a = ap.parse_args()
     TOKEN = a.token
+    if not TOKEN and a.host not in ("127.0.0.1", "localhost"):
+        TOKEN = secrets.token_urlsafe(12)  # never expose cameras to the LAN unlocked
     if os.path.exists(CFG) and not a.demo:
         for s in json.load(open(CFG)):
             add_cam(s["name"], s["src"], s["kind"])
@@ -258,7 +261,8 @@ def main():
             add_cam(d["name"], d["src"], d["kind"])
     for i in range(a.demo):
         add_cam(f"Demo {i + 1}", f"demo:{i + 1}", "demo")
-    print(f"CamWall: http://localhost:{a.port}   (remote: http://<this-pc-ip>:{a.port})")
+    t = f"/?t={TOKEN}" if TOKEN else ""
+    print(f"CamWall: http://localhost:{a.port}{t}   (remote: http://<this-pc-ip>:{a.port}{t})")
     app.run(host=a.host, port=a.port, threaded=True)
 
 

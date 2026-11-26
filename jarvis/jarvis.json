@@ -1,0 +1,10 @@
+{
+  "_note": "gesture -> swarm command. Hold the gesture 1s to fire. Only these run.",
+  "commands": {
+    "fist": "health report",
+    "victory": "ollama status",
+    "three": "sunshine status",
+    "thumbs_up": "stack status",
+    "rock": "process mail"
+  }
+}
