@@ -45,6 +45,7 @@ class T(unittest.TestCase):
     def test_page_and_config(self):
         self.assertEqual(call(self.base + "/")[0], 200)
         self.assertEqual(call(self.base + "/gestures.js")[0], 200)
+        self.assertEqual(call(self.base + "/hand.js")[0], 200)
         code, body = call(self.base + "/config")
         self.assertEqual(json.loads(body)["commands"]["fist"], "health report")
 
@@ -66,6 +67,19 @@ class T(unittest.TestCase):
         app = jarvis.App(self.tmp, cooldown=60)
         self.assertEqual(app.run("fist")[0], 200)
         self.assertEqual(app.run("fist")[0], 429)
+
+    def test_reserved_gestures_never_run(self):
+        cfg = self.tmp / "j.json"
+        cfg.write_text(json.dumps({"commands": {"thumbs_up": "x", "open": "y", "fist": "health report"}}))
+        app = jarvis.App(self.tmp, cfg, cooldown=0)
+        self.assertEqual(sorted(app.commands), ["fist"])
+        self.assertEqual(app.run("thumbs_up")[0], 400)
+
+    def test_csp_and_no_cdn(self):
+        html = (Path(jarvis.HERE) / "hand.html").read_text()
+        self.assertIn("Content-Security-Policy", html)
+        for f in ["hand.html", "hand.js", "gestures.js"]:
+            self.assertNotRegex((Path(jarvis.HERE) / f).read_text(), r"https?://(?!127\.0\.0\.1)")
 
     def test_find_swarm(self):
         self.assertEqual(jarvis.find_swarm(str(self.tmp)), self.tmp.resolve())

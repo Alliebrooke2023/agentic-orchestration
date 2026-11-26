@@ -1,5 +1,5 @@
 # C:\swarm\jarvis\jarvis.py -- 3D hand-motion HUD for the swarm. Stdlib only.
-"""python jarvis.py            fetch libs (first run), serve on 127.0.0.1:8770, open browser
+"""python jarvis.py            fetch libs (first run), serve on 127.0.0.1:8481, open browser
 python jarvis.py --fetch    only download libs into vendor/
 python jarvis.py --no-open  serve without opening a browser"""
 import argparse
@@ -35,7 +35,8 @@ MODEL = ("https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_l
          "fbc2a30080c3c557093b5ddfc334698132eb341044ccee322ccf8bcf3607cde1")
 TYPES = {".html": "text/html", ".js": "text/javascript", ".mjs": "text/javascript",
          ".wasm": "application/wasm", ".task": "application/octet-stream", ".json": "application/json"}
-STATIC = {"hand.html", "gestures.js"}
+RESERVED = {"thumbs_up", "open"}
+STATIC = {"hand.html", "hand.js", "gestures.js"}
 
 
 def _get(url):
@@ -73,7 +74,8 @@ def find_swarm(arg):
 class App:
     def __init__(self, swarm_dir, cfg_path=HERE / "jarvis.json", cooldown=3.0):
         self.swarm_dir, self.cooldown, self.last, self.lock = swarm_dir, cooldown, 0.0, threading.Lock()
-        self.commands = json.loads(Path(cfg_path).read_text(encoding="utf-8"))["commands"]
+        cmds = json.loads(Path(cfg_path).read_text(encoding="utf-8"))["commands"]
+        self.commands = {g: c for g, c in cmds.items() if g not in RESERVED}  # YES/NO gestures
 
     def run(self, gesture):
         cmd = self.commands.get(gesture)
@@ -140,7 +142,7 @@ def serve(app, port, host="127.0.0.1"):
 
 def main():
     ap = argparse.ArgumentParser(prog="jarvis")
-    ap.add_argument("--port", type=int, default=8770)
+    ap.add_argument("--port", type=int, default=8481)
     ap.add_argument("--swarm", help="folder that contains the swarm package (default: auto)")
     ap.add_argument("--fetch", action="store_true", help="re-download libs and exit")
     ap.add_argument("--no-open", action="store_true")

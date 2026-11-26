@@ -1,10 +1,10 @@
 {
-  "_note": "gesture -> swarm command. Hold the gesture 1s to fire. Only these run.",
+  "_note": "gesture -> swarm command. Hold 1s to propose, then thumbs-up (or YES) to run. Only these can run. thumbs_up and open are reserved.",
   "commands": {
     "fist": "health report",
     "victory": "ollama status",
     "three": "sunshine status",
-    "thumbs_up": "stack status",
-    "rock": "process mail"
+    "rock": "process mail",
+    "pinky": "stack status"
   }
 }
