@@ -8,3 +8,6 @@ swarm/
 
 # Python camera wall (own tooling)
 camwall/
+
+# Jarvis hand HUD (own tooling; vendor/ is downloaded libs)
+jarvis/
