@@ -36,7 +36,7 @@ MODEL = ("https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_l
 TYPES = {".html": "text/html", ".js": "text/javascript", ".mjs": "text/javascript",
          ".wasm": "application/wasm", ".task": "application/octet-stream", ".json": "application/json"}
 RESERVED = {"thumbs_up", "open"}
-STATIC = {"hand.html", "hand.js", "gestures.js"}
+STATIC = {"hand.html", "hand.js", "gestures.js", "cams.js"}
 
 
 def _get(url):

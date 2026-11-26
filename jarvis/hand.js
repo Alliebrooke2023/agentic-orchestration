@@ -1,6 +1,7 @@
 // jarvis/hand.js -- HUD logic. Camera turns ON only by a tap. Nothing is stored or sent.
 import * as THREE from "./vendor/three.module.js";
 import { classify, pinchInfo, Holder } from "./gestures.js";
+import { camOptions, pickCam } from "./cams.js";
 const $ = (id) => document.getElementById(id), TEST = location.search.includes("test=1");
 const log = (h) => { $("log").innerHTML = h + "\n" + $("log").innerHTML.slice(0, 6000); };
 const esc = (s) => String(s).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[c]);
@@ -41,6 +42,7 @@ function toWorld(p) {
 // ---- interaction state
 const holder = new Holder(1000, 1500), vel = { x: 0.004, y: 0.006 };
 let target = 1, lastPinch = null, lastTwo = null, map = {};
+const goal = new THREE.Vector3(); // point = the object follows your index fingertip in 3D
 fetch("config").then((x) => x.json()).then((c) => {
   map = c.commands || {};
   $("map").innerHTML = Object.entries(map).map(([g, cmd]) => `<div>${esc(g)} → ${esc(cmd)}</div>`).join("") + "<div>hold 1s to propose · thumbs-up = YES · open palm = NO/reset</div><div>pinch+drag → rotate · 2-hand pinch → zoom</div>" + (c.swarm ? "" : "<div style='color:var(--w)'>swarm not found: commands disabled</div>");
@@ -65,7 +67,7 @@ $("yes").onclick = () => answer(true);
 $("no").onclick = () => answer(false);
 function fire(g) {
   if (pending) { if (g === "thumbs_up") answer(true); else if (g === "open") answer(false); return; }
-  if (g === "open") { holo.rotation.set(0, 0, 0); target = 1; vel.x = 0.004; vel.y = 0.006; return log("<b>reset</b>"); }
+  if (g === "open") { holo.rotation.set(0, 0, 0); holo.position.set(0, 0, 0); goal.set(0, 0, 0); target = 1; vel.x = 0.004; vel.y = 0.006; return log("<b>reset</b>"); }
   if (map[g]) ask(g);
 }
 
@@ -88,6 +90,10 @@ function onHands(list, now) {
     if (lastPinch) { vel.y = -(p.x - lastPinch.x) * 6; vel.x = (p.y - lastPinch.y) * 6; }
     lastPinch = p;
   } else { lastPinch = lastTwo = null; }
+  if (gs[0] === "point") {
+    const tip = toWorld(list[0][8]);
+    goal.set(tip.x * 0.8, tip.y * 0.8, Math.max(-3, Math.min(2, tip.z * 2)));
+  }
   const g = gs[0] || "none", st = holder.update(g, now);
   $("g").textContent = gs.length ? gs.join(" + ") : "no hands";
   $("bar").firstChild.style.width = (["none", "unknown", "pinch"].includes(g) ? 0 : st.progress * 100) + "%";
@@ -99,10 +105,11 @@ function frame(now) {
   holo.rotation.x += vel.x; holo.rotation.y += vel.y;
   if (!lastPinch) { vel.x += (0.002 - vel.x) * 0.02; vel.y += (0.004 - vel.y) * 0.02; }
   const s = holo.scale.x + (target - holo.scale.x) * 0.15; holo.scale.setScalar(s);
+  holo.position.lerp(goal, 0.12);
   r.render(scene, cam); requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);
-window.jarvis = { feed: (list) => onHands(list, performance.now()), classify, holo, answer, get pending() { return pending; } };
+window.jarvis = { feed: (list) => onHands(list, performance.now()), classify, holo, goal, answer, get pending() { return pending; } };
 
 // ---- vision: OFF by default. Only a tap turns it ON. Code may turn it OFF, never ON.
 let stream = null, lmk = null, live = false, lastSeen = 0, raf = 0;
@@ -124,11 +131,33 @@ async function loadModel() {
   try { return await HandLandmarker.createFromOptions(files, opts("GPU")); }
   catch { log("GPU busy or missing, using CPU"); return HandLandmarker.createFromOptions(files, opts("CPU")); }
 }
-async function visionOn() { // called only from the button's click handler
+// ---- camera picker: built-in or USB. Labels show once the browser has camera permission.
+const store = { get: () => { try { return localStorage.getItem("jarvis.cam"); } catch { return null; } },
+                set: (v) => { try { localStorage.setItem("jarvis.cam", v); } catch { /* private mode */ } } };
+async function refreshCams() {
+  let devs = [];
+  try { devs = await navigator.mediaDevices.enumerateDevices(); } catch { /* no media api */ }
+  const opts = camOptions(devs), sel = $("cam"), cur = sel.value || store.get();
+  sel.innerHTML = opts.length ? "" : "<option value=''>no camera found</option>";
+  for (const o of opts) { const el = document.createElement("option"); el.value = o.id; el.textContent = o.text; sel.appendChild(el); }
+  const pick = pickCam(opts, cur); if (pick !== null) sel.value = pick;
+  window.jarvis.cams = opts;
+  return opts;
+}
+navigator.mediaDevices?.addEventListener?.("devicechange", () => refreshCams().then((o) => log(`cameras: ${o.length}`)));
+$("cam").onchange = () => { store.set($("cam").value); if (live) { visionOff(); visionOn(); } }; // user's own pick
+refreshCams();
+
+async function visionOn() { // called only from a user action (button tap or camera pick while live)
   try {
     $("g").textContent = "starting";
     lmk = lmk || (await loadModel());
-    stream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 }, audio: false });
+    const id = $("cam").value;
+    stream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480, ...(id ? { deviceId: { exact: id } } : {}) }, audio: false });
+    const label = stream.getVideoTracks()[0].label;
+    await refreshCams(); // labels appear after permission
+    const now = stream.getVideoTracks()[0].getSettings().deviceId; if (now) { $("cam").value = now; store.set(now); }
+    log("camera: " + esc(label));
     const v = $("v"); v.srcObject = stream; await v.play();
     live = true; lastSeen = performance.now(); lamp(true); $("g").textContent = "online";
     stream.getVideoTracks()[0].onended = () => visionOff("camera ended");

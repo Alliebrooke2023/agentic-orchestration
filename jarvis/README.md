@@ -9,7 +9,15 @@ Gestures drive the hologram and propose swarm commands behind a YES gate.
 or
     python jarvis.py
 
-Opens http://127.0.0.1:8481. Tap **Vision ON** to start the camera.
+Opens http://127.0.0.1:8481. Pick a camera (top right), tap **Vision ON**.
+
+## Camera: PC or USB
+- The dropdown lists every camera: built-in (laptop) and USB webcams.
+- Names show after the first permission prompt. Before that: "Camera 1, 2…".
+- Default: your last pick, else a USB cam, else the first one. Remembered per browser.
+- Plug in a USB cam while running: the list refreshes by itself.
+- Switch cameras while live: pick another one, the stream restarts on it.
+- Capture cards (DVI/HDMI) show up here too if Windows sees them as a webcam.
 
 ## Aria rules it follows
 - **Vision ON only by your tap.** Page loads with the camera off. Lamp badge is red while live.
@@ -25,6 +33,7 @@ Opens http://127.0.0.1:8481. Tap **Vision ON** to start the camera.
 ## Gestures
 | gesture | does |
 |---|---|
+| point (index only) | move hologram — it follows your fingertip in 3D |
 | pinch + drag | rotate hologram |
 | pinch with both hands | zoom |
 | open palm (hold 1s) | reset / NO |
@@ -45,4 +54,4 @@ Auto-finds `..\swarm`, `..`, or `C:\swarm`. Override: `python jarvis.py --swarm 
 
 ## Tests
     python -m unittest discover -s tests
-    node --test tests/gestures.test.mjs
+    node --test tests/gestures.test.mjs tests/cams.test.mjs

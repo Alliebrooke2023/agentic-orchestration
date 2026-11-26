@@ -78,7 +78,7 @@ class T(unittest.TestCase):
     def test_csp_and_no_cdn(self):
         html = (Path(jarvis.HERE) / "hand.html").read_text()
         self.assertIn("Content-Security-Policy", html)
-        for f in ["hand.html", "hand.js", "gestures.js"]:
+        for f in ["hand.html", "hand.js", "gestures.js", "cams.js"]:
             self.assertNotRegex((Path(jarvis.HERE) / f).read_text(), r"https?://(?!127\.0\.0\.1)")
 
     def test_find_swarm(self):
