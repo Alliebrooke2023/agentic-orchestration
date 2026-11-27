@@ -13,8 +13,9 @@ echo  5  Build a stack  (asks for a name)
 echo  6  Morning report now
 echo  7  Schedule daily 8am report
 echo  8  Phone alerts + synced folder
+echo  J  Jarvis 3D hand HUD  (install / run / test)
 echo  9  Quit
-set /p c=Pick 1-9: 
+set /p c=Pick 1-9 or J:
 if "%c%"=="1" powershell -ExecutionPolicy Bypass -File "%~dp0install.ps1" & goto menu
 if "%c%"=="2" python -m swarm & goto menu
 if "%c%"=="3" python -m swarm "ollama status" & python -m swarm "sunshine status" & goto menu
@@ -24,7 +25,13 @@ if "%c%"=="6" python -m swarm "health report" & goto menu
 if "%c%"=="7" powershell -ExecutionPolicy Bypass -File "%~dp0schedule.ps1" & goto menu
 if "%c%"=="8" call :alerts & goto menu
 if "%c%"=="9" exit /b
+if /i "%c%"=="J" call :jarvis & goto menu
 goto menu
+:jarvis
+if not exist "%~dp0jarvis\jarvis.bat" (echo Jarvis not found in %~dp0jarvis & exit /b)
+call "%~dp0jarvis\jarvis.bat"
+cd /d "%~dp0"
+exit /b
 :stack
 set "n="
 set /p n=Stack name: 
