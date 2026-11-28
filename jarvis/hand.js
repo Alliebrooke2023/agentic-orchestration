@@ -33,10 +33,13 @@ const hands = [0, 1].map(() => {
 });
 function resize() { r.setSize(innerWidth, innerHeight); cam.aspect = innerWidth / innerHeight; cam.updateProjectionMatrix(); }
 addEventListener("resize", resize); resize();
-// normalized landmark -> world, mirrored like a selfie view, fills the visible frustum
+// normalized landmark -> world, mirrored like a selfie view. Matches the <video> object-fit:cover crop,
+// so a 4:3 webcam on a 16:9 screen keeps the skeleton on top of your real hand.
 function toWorld(p) {
   const h = 2 * Math.tan((cam.fov * Math.PI) / 360) * cam.position.z, w = h * cam.aspect;
-  return new THREE.Vector3((0.5 - p.x) * w, (0.5 - p.y) * h, -(p.z || 0) * w * 1.5);
+  const v = $("v"), va = v.videoWidth && v.videoHeight ? v.videoWidth / v.videoHeight : cam.aspect;
+  const fw = Math.max(w, h * va), fh = Math.max(h, w / va);
+  return new THREE.Vector3((0.5 - p.x) * fw, (0.5 - p.y) * fh, -(p.z || 0) * fw * 1.5);
 }
 
 // ---- interaction state

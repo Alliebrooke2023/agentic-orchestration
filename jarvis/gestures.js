@@ -23,7 +23,8 @@ export function extended(lm) {
 export function pinchInfo(lm) {
   const s = handScale(lm);
   const d = dist(lm[4], lm[8]) / s;
-  const indexOut = dist(lm[0], lm[8]) > s * 0.75; // a fist also brings thumb near index
+  // a fist also brings thumb near index: in a pinch the index tip stays out past its middle joint
+  const indexOut = dist(lm[0], lm[8]) > s * 0.75 && dist(lm[0], lm[8]) > dist(lm[0], lm[6]) * 0.8;
   return {
     pinching: d < 0.28 && indexOut,
     strength: Math.max(0, Math.min(1, 1 - d / 0.6)),

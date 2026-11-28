@@ -54,5 +54,5 @@ Auto-finds `..\swarm`, `..`, or `C:\swarm`. Override: `python jarvis.py --swarm 
 
 ## Tests
     python -m unittest discover -s tests
-    node --test tests/gestures.test.mjs tests/cams.test.mjs
+    node --test tests/gestures.test.mjs tests/cams.test.mjs tests/real_hands.test.mjs
     node tests/smoke_hud.mjs      (headless browser: YES gate, camera-off, no outside calls; needs Playwright)
