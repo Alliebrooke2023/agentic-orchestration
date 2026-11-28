@@ -2,9 +2,10 @@ import { z } from "zod"
 
 export const envSchema = z.object({
   NEXT_PUBLIC_ASAP_PROTOCOL_URL: z
-    .union([z.string(), z.undefined()])
-    .transform((v) => (v === "" ? undefined : v))
-    .pipe(z.string().url().optional().default("https://asap-protocol.vercel.app")),
+    .string()
+    .optional()
+    .transform((v) => (v ? v : "https://asap-protocol.vercel.app"))
+    .pipe(z.string().url()),
 })
 
 export type EnvSchema = z.infer<typeof envSchema>

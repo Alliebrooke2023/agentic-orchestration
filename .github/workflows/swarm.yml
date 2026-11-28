@@ -3,9 +3,25 @@ name: Swarm
 on:
   push:
     branches: [main]
-    paths: ["swarm/**", "swarm-cortex.zip", "swarm-cortex-setup.ps1", ".github/workflows/swarm.yml"]
+    paths:
+      [
+        "swarm/**",
+        "jarvis/**",
+        "swarm-cortex.zip",
+        "swarm-cortex-setup.ps1",
+        ".github/scripts/swarm_bundle.py",
+        ".github/workflows/swarm.yml",
+      ]
   pull_request:
-    paths: ["swarm/**", "swarm-cortex.zip", "swarm-cortex-setup.ps1", ".github/workflows/swarm.yml"]
+    paths:
+      [
+        "swarm/**",
+        "jarvis/**",
+        "swarm-cortex.zip",
+        "swarm-cortex-setup.ps1",
+        ".github/scripts/swarm_bundle.py",
+        ".github/workflows/swarm.yml",
+      ]
 
 jobs:
   test:
@@ -27,4 +43,4 @@ jobs:
       - name: Bundle in sync
         if: matrix.os == 'ubuntu-latest'
         working-directory: .
-        run: python .github/scripts/check_swarm_bundle.py
+        run: python .github/scripts/swarm_bundle.py check

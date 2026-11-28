@@ -36,3 +36,4 @@ Lives in `swarm/`, separate from the Next.js app in the repo root. No shared cod
 1. Unzip to `C:\swarm`
 2. Double-click `setup.bat`, pick `1` (install), then `3` (health check), then `2` (run)
 3. Pick `6` for a morning report now, `7` to schedule it daily at 8am (runs `morning.bat`)
+4. Pick `J` for the Jarvis 3D hand HUD (`jarvis/`; see `jarvis/README.md`)
